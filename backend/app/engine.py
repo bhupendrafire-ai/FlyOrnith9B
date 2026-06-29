@@ -3444,7 +3444,6 @@ class AgentLoopEngine:
             "Return exactly one JSON object for a file_write tool call. "
             "Put the complete self-contained HTML document in args.content as a valid JSON string. "
             "Include compact inline CSS and JavaScript when the goal needs an interactive app. "
-            "For computer-keyboard music apps, prefer a compact fully mapped playable range over an unlabeled full piano. "
             "Keep it complete but small enough for one local-model response.\n\n"
             f"Goal: {state.goal}\n"
             f"Current task: {current_task_text}\n"
