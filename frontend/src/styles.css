@@ -1632,6 +1632,28 @@ a {
   color: #ffd68d;
 }
 
+.needs-you-strip button.active.approval {
+  background: #3b2714;
+  border-color: #b9762a;
+  color: #ffe0a5;
+}
+
+.needs-you-strip button.active.blocked {
+  background: #421f1f;
+  border-color: #9b4b4b;
+  color: #ffc6bd;
+}
+
+.needs-you-strip button.active.paused {
+  background: #203624;
+  border-color: #4a7658;
+  color: #bdf3c8;
+}
+
+.needs-you-strip button.clear {
+  color: #9fb09f;
+}
+
 .needs-you-strip strong {
   background: #0f120f;
   border: 1px solid #30372f;
@@ -1697,6 +1719,42 @@ a {
   font-size: 0.74rem;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.focus-status-card .focus-status-explainer {
+  border-left: 3px solid #465246;
+  color: #dfe6da;
+  font-family: inherit;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  padding-left: 0.65rem;
+}
+
+.focus-status-card .focus-status-explainer.approval {
+  border-left-color: #b9762a;
+  color: #ffe0a5;
+}
+
+.focus-status-card .focus-status-explainer.blocked {
+  border-left-color: #9b4b4b;
+  color: #ffc6bd;
+}
+
+.focus-status-card .focus-status-explainer.paused {
+  border-left-color: #68b879;
+  color: #bdf3c8;
+}
+
+.focus-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.focus-status-actions button {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
 }
 
 .focus-chat-shell {
@@ -1779,6 +1837,11 @@ a {
 
 .required-action-card.watch {
   border-left-color: #ffd68d;
+}
+
+.required-action-card.type-resume,
+.required-action-card.type-recovery {
+  border-left-color: #68b879;
 }
 
 .required-action-card > div:first-child {

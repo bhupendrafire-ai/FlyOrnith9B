@@ -223,7 +223,8 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
   const readinessNeedsHuman = Boolean(
     actionReadiness &&
       !actionReadiness.ready_to_act &&
-      ["blocked", "recover", "waiting_approval"].includes(actionReadiness.status),
+      (["blocked", "waiting_approval"].includes(actionReadiness.status) ||
+        (actionReadiness.status === "recover" && selected.status !== "paused")),
   );
 
   if (actionReadiness && readinessNeedsHuman) {
@@ -251,7 +252,7 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
       id: "required-resume-paused-run",
       role: "operator",
       kind: "required_action",
-      title: "Run Paused",
+      title: pausedRunTitle(actionReadiness?.status, selected.state.next_step),
       body: pausedRunBody(actionReadiness?.status, selected.state.milestone, selected.state.next_step),
       timestamp: nowish,
       severity: "watch",
@@ -401,6 +402,16 @@ function legacyEventItem(event: EventRecord): ActivityFeedItem {
 }
 
 function pausedRunBody(readinessStatus: string | undefined, milestone: string, nextStep: string): string {
+  if (isRecoveryPause(readinessStatus, nextStep)) {
+    return [
+      "No approval is waiting.",
+      "FlyOrnith paused after a recoverable tool or evidence step failed.",
+      nextStep ? `Next: ${nextStep}` : "Click Resume Run to continue from the recovery checkpoint.",
+      "If it lands here again, open Activity > Recovery and replan.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   if (readinessStatus === "needs_replan" || readinessStatus === "reorient") {
     return [
       "No approval is needed. FlyOrnith is paused before the next loop step.",
@@ -418,7 +429,27 @@ function pausedRunBody(readinessStatus: string | undefined, milestone: string, n
     .join("\n");
 }
 
+function pausedRunTitle(readinessStatus: string | undefined, nextStep: string): string {
+  if (isRecoveryPause(readinessStatus, nextStep)) return "Paused For Recovery";
+  if (readinessStatus === "needs_replan" || readinessStatus === "reorient") return "Paused Before Next Step";
+  return "Run Paused";
+}
+
+function isRecoveryPause(readinessStatus: string | undefined, nextStep: string): boolean {
+  const lowered = nextStep.toLowerCase();
+  return readinessStatus === "recover" || lowered.includes("recover") || lowered.includes("recovery");
+}
+
 function actionReadinessInfoBody(status: string, summary: string, recommendedAction: string): string {
+  if (status === "recover") {
+    return [
+      "Recovery state, not an approval.",
+      summary || "A tool or evidence step failed and FlyOrnith paused before trying the next action.",
+      recommendedAction ? `Next: ${recommendedAction}` : "Click Resume Run to continue from the recovery checkpoint.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   if (status === "needs_replan" || status === "reorient") {
     return [
       "Internal loop state, not a user approval.",

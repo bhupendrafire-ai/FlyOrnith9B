@@ -468,11 +468,87 @@ export function App() {
     () => activeConversation.filter((item) => item.kind !== "required_action"),
     [activeConversation],
   );
-  const firstRequiredAction = requiredActionItems[0];
-  const requiredActionLabel =
-    requiredActionItems.length > 0 && requiredActionItems.every((item) => item.actionType === "resume")
-      ? "Paused"
-      : "Needs You";
+  const attentionState = useMemo(() => {
+    const goalCount = requiredActionItems.filter((item) => item.actionType === "goal_confirmation").length;
+    const approvalCount = requiredActionItems.filter((item) => item.actionType === "approval").length;
+    const blockerCount = requiredActionItems.filter((item) => item.actionType === "blocker").length;
+    const recoveryCount = requiredActionItems.filter((item) => item.actionType === "recovery").length;
+    const resumeCount = requiredActionItems.filter((item) => item.actionType === "resume").length;
+    const readinessCount = requiredActionItems.filter((item) => item.actionType === "readiness").length;
+    const queueCount = requiredActionItems.filter((item) => item.actionType === "queue" || item.actionType === "handoff").length;
+    const first = requiredActionItems[0];
+
+    if (!selected) {
+      return {
+        label: "No Run",
+        count: 0,
+        tone: "clear",
+        sectionTitle: "Run Status",
+        detail: "Open an existing chat or start a new run.",
+      };
+    }
+    if (goalCount > 0) {
+      return {
+        label: "Confirm Goal",
+        count: goalCount,
+        tone: "approval",
+        sectionTitle: "Decision Needed",
+        detail: "Ornith proposed a goal update. Accept or reject it in the chat before the loop continues.",
+      };
+    }
+    if (approvalCount > 0) {
+      return {
+        label: "Needs Approval",
+        count: approvalCount,
+        tone: "approval",
+        sectionTitle: "Decision Needed",
+        detail: `${approvalCount} approval${approvalCount === 1 ? "" : "s"} waiting in the chat.`,
+      };
+    }
+    if (blockerCount > 0) {
+      return {
+        label: "Blocked",
+        count: blockerCount,
+        tone: "blocked",
+        sectionTitle: "Blocked",
+        detail: "A blocker needs resolution before FlyOrnith should continue.",
+      };
+    }
+    if (recoveryCount > 0) {
+      return {
+        label: "Recovery",
+        count: recoveryCount,
+        tone: "paused",
+        sectionTitle: "Recovery Step",
+        detail: first ? first.body.split("\n")[0] : "Resume recovery or replan from the chat.",
+      };
+    }
+    if (resumeCount > 0 || selected.status === "paused") {
+      return {
+        label: "Paused",
+        count: Math.max(resumeCount, 1),
+        tone: "paused",
+        sectionTitle: "Next Step",
+        detail: "No approval is waiting. Click Resume Run to continue, or open Activity for recovery details.",
+      };
+    }
+    if (readinessCount > 0 || queueCount > 0) {
+      return {
+        label: "Check Status",
+        count: readinessCount + queueCount,
+        tone: "watch",
+        sectionTitle: "Status Check",
+        detail: first ? first.body.split("\n")[0] : "Review the chat card for the next step.",
+      };
+    }
+    return {
+      label: "All Clear",
+      count: 0,
+      tone: "clear",
+      sectionTitle: "Run Status",
+      detail: selected.status === "running" ? "FlyOrnith is working. No user action is waiting." : "No user action is waiting.",
+    };
+  }, [requiredActionItems, selected]);
   const selectedProjectPath =
     selected?.state.workspace_isolation.workspace_path ||
     selected?.workspace_path ||
@@ -1221,6 +1297,24 @@ export function App() {
     }
 
     if (item.actionType === "readiness") {
+      if (selected?.status === "paused") {
+        return (
+          <>
+            <button
+              className="primary"
+              type="button"
+              onClick={() => control("resume")}
+              disabled={busy || !selectedId || !canResumeRun(selected)}
+            >
+              <Play size={15} />
+              Resume Run
+            </button>
+            <button type="button" onClick={() => setActiveView("activity")}>
+              Details
+            </button>
+          </>
+        );
+      }
       return (
         <button type="button" onClick={() => setActiveView("activity")}>
           View Details
@@ -1433,16 +1527,18 @@ export function App() {
         </div>
 
         <div className="needs-you-strip">
-          <button type="button" onClick={() => setActiveView("focus")} className={requiredActionItems.length ? "active" : ""}>
+          <button
+            type="button"
+            onClick={() => setActiveView("focus")}
+            className={[requiredActionItems.length || selected?.status === "paused" ? "active" : "", attentionState.tone]
+              .filter(Boolean)
+              .join(" ")}
+          >
             <AlertTriangle size={15} />
-            {requiredActionLabel}
-            <strong>{requiredActionItems.length}</strong>
+            {attentionState.label}
+            <strong>{attentionState.count}</strong>
           </button>
-          <span>
-            {firstRequiredAction
-              ? `${firstRequiredAction.title}: ${firstRequiredAction.body.split("\n")[0]}`
-              : "No pending user action in this chat."}
-          </span>
+          <span>{attentionState.detail}</span>
           <small>
             {[
               supervisor ? `${supervisor.operator_attention_count} attention` : "",
@@ -1463,6 +1559,24 @@ export function App() {
             </div>
             <strong>{selected?.state.next_step || "Start or resume a chat to begin work."}</strong>
             <p>{selectedProjectPath ? `Project: ${selectedProjectPath}` : "No project folder selected for this run."}</p>
+            <p className={`focus-status-explainer ${attentionState.tone}`}>{attentionState.detail}</p>
+            {selected?.status === "paused" ? (
+              <div className="focus-status-actions">
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={() => control("resume")}
+                  disabled={!selectedId || busy || !canResumeRun(selected)}
+                >
+                  <Play size={16} />
+                  Resume Run
+                </button>
+                <button type="button" onClick={() => setActiveView("activity")}>
+                  <ListChecks size={16} />
+                  Recovery Details
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <div className="focus-chat-shell">
@@ -1475,14 +1589,17 @@ export function App() {
               <div className="required-action-stack">
                 <div className="focus-section-heading">
                   <AlertTriangle size={16} />
-                  <strong>Required Actions</strong>
-                  <span>{requiredActionItems.length}</span>
+                  <strong>{attentionState.sectionTitle}</strong>
+                  <span>{attentionState.count}</span>
                 </div>
                 {requiredActionItems.length === 0 ? (
-                  <p className="muted">No approval, goal confirmation, recovery prompt, or blocker is waiting on you.</p>
+                  <p className="muted">{attentionState.detail}</p>
                 ) : (
                   requiredActionItems.map((item) => (
-                    <article className={`required-action-card ${item.severity ?? "watch"}`} key={item.id}>
+                    <article
+                      className={`required-action-card ${item.severity ?? "watch"} type-${item.actionType ?? "queue"}`}
+                      key={item.id}
+                    >
                       <div>
                         <strong>{item.title}</strong>
                         <span>{item.meta?.map((meta) => formatLocalTextTimestamps(meta)).join(" / ")}</span>
