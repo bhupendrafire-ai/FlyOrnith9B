@@ -9,63 +9,36 @@ EVIDENCE_LABEL_WORDS: dict[str, set[str]] = {
         "check",
         "checks",
         "audio",
-        "arpeggiator",
-        "attack",
-        "bonus",
         "characters",
-        "chord",
         "coin",
         "coins",
         "collision",
         "compile",
         "contains",
-        "control",
-        "controls",
         "deck",
         "distance",
         "exist",
         "exists",
-        "feedback",
-        "filter",
-        "highlighted",
         "jump",
-        "keyboard",
         "lane",
         "lanes",
-        "latency",
         "lint",
         "limitation",
         "limitations",
         "logo",
         "logos",
-        "mapping",
-        "metronome",
         "movement",
-        "note",
-        "notes",
         "obstacle",
         "obstacles",
-        "octave",
         "original",
         "copyrighted",
-        "play",
-        "playback",
         "powerpoint",
-        "preset",
-        "presets",
-        "pressed",
         "pptx",
-        "recording",
-        "release",
         "restart",
-        "scale",
         "score",
         "slide",
         "slides",
-        "sound",
         "speed",
-        "sustain",
-        "synth",
         "test",
         "tests",
         "tradeoff",
@@ -78,18 +51,13 @@ EVIDENCE_LABEL_WORDS: dict[str, set[str]] = {
     "browser": {
         "arcade",
         "browser",
-        "controls",
         "dashboard",
         "design",
-        "desktop",
         "hud",
-        "highlighted",
-        "layout",
         "load",
         "loads",
         "local",
         "localhost",
-        "mapping",
         "page",
         "responsive",
         "screen",
@@ -98,7 +66,6 @@ EVIDENCE_LABEL_WORDS: dict[str, set[str]] = {
         "starts",
         "ui",
         "visual",
-        "visualizer",
     },
     "edit": {"edit", "code", "write", "implement", "implemented", "patch", "change"},
     "web": {"web", "internet", "source", "sources", "search", "citation", "citations", "latest"},
@@ -121,18 +88,6 @@ LOCAL_WEB_APP_WORDS = {
     "starts",
 }
 WEB_SOURCE_WORDS = EVIDENCE_LABEL_WORDS["web"] - {"web"}
-CHECKPOINT_CONTEXT_WORDS = {"checkpoint", "handoff", "memory", "obsidian"}
-MUSIC_NOTE_CONTEXT_WORDS = {
-    "audio",
-    "keyboard",
-    "keys",
-    "mapping",
-    "music",
-    "musical",
-    "play",
-    "synth",
-    "synthesizer",
-}
 SOURCE_FILE_CONTEXT_WORDS = {
     "code",
     "css",
@@ -159,27 +114,13 @@ def infer_required_labels(criterion: str) -> list[str]:
         label
         for label in EVIDENCE_LABEL_ORDER
         if words.intersection(EVIDENCE_LABEL_WORDS[label])
-        and not _evidence_label_is_false_positive(label, words)
+        and not _web_label_is_false_positive(label, words)
     ]
 
 
-def _evidence_label_is_false_positive(label: str, words: set[str]) -> bool:
-    if label == "checkpoint":
-        return _checkpoint_label_is_false_positive(words)
-    if label == "web":
-        return _web_label_is_false_positive(words)
-    return False
-
-
-def _checkpoint_label_is_false_positive(words: set[str]) -> bool:
-    if not words.intersection({"note", "notes"}):
+def _web_label_is_false_positive(label: str, words: set[str]) -> bool:
+    if label != "web":
         return False
-    if words.intersection(CHECKPOINT_CONTEXT_WORDS):
-        return False
-    return bool(words.intersection(MUSIC_NOTE_CONTEXT_WORDS))
-
-
-def _web_label_is_false_positive(words: set[str]) -> bool:
     if "web" in words and not words.intersection(WEB_SOURCE_WORDS) and words.intersection(LOCAL_WEB_APP_WORDS):
         return True
     if words.intersection({"source", "sources"}) and not words.intersection(WEB_CITATION_WORDS):
