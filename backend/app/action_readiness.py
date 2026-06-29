@@ -489,7 +489,7 @@ def _recommendation_for_label(
             command_hint = (
                 "url=http://127.0.0.1:5173"
                 if criterion_id == "readiness-source-ref" or _criterion_allows_dashboard_proof(criterion)
-                else ""
+                else _local_index_url(run.workspace_path)
             )
             return AcceptanceEvidenceRecommendation(
                 id=f"{criterion_id}-browser",
@@ -542,6 +542,15 @@ def _recommendation_for_label(
         reason="No available built-in tool recommendation exists for this label.",
         available=False,
     )
+
+
+def _local_index_url(workspace_path: str) -> str:
+    if not workspace_path:
+        return ""
+    index_path = Path(workspace_path) / "index.html"
+    if not index_path.exists():
+        return ""
+    return f"url={index_path.resolve().as_uri()}"
 
 
 def _report(

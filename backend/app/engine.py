@@ -4613,7 +4613,11 @@ class AgentLoopEngine:
             )
         if label == "browser":
             if state.browser_enabled:
-                command_hint = "url=http://127.0.0.1:5173" if self._criterion_allows_dashboard_proof(item.criterion) else ""
+                command_hint = (
+                    "url=http://127.0.0.1:5173"
+                    if self._criterion_allows_dashboard_proof(item.criterion)
+                    else self._local_index_url(state)
+                )
                 return AcceptanceEvidenceRecommendation(
                     id=f"{item.id}-browser",
                     criterion_id=item.id,
@@ -4689,6 +4693,13 @@ class AgentLoopEngine:
 
     def _criterion_allows_dashboard_proof(self, criterion: str) -> bool:
         return "dashboard" in criterion.lower()
+
+    def _local_index_url(self, state: RunState) -> str:
+        workspace = Path(state.workspace_isolation.workspace_path or "")
+        index_path = workspace / "index.html"
+        if not index_path.exists():
+            return ""
+        return f"url={index_path.resolve().as_uri()}"
 
     async def run_operator_dispatch_restart_smoke(self) -> OperatorDispatchRestartSmokeReport:
         run: RunRecord | None = None

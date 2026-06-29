@@ -4,7 +4,7 @@ from pathlib import Path
 
 from app.action_context import build_action_context_pack
 from app.acceptance import infer_required_labels
-from app.artifact_verification import artifact_verification_command, expected_artifact_suffix
+from app.artifact_verification import artifact_creation_action, artifact_verification_command, expected_artifact_suffix
 from app.context_compiler import ContextCompiler
 from app.memory import MemoryContext
 from app.persistence import RunStore
@@ -128,7 +128,7 @@ def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
     assert infer_required_labels("Project source files are implemented in the workspace and index.html exists.") == ["verification", "edit"]
 
 
-def test_runner_slide_controls_do_not_trigger_pptx_artifact_detection(tmp_path: Path) -> None:
+def test_runner_slide_controls_trigger_webapp_not_pptx_artifact_detection(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
     run = store.create_run(
         "Build an original Subway Surfers-style endless runner web app called Metro Dash.",
@@ -137,8 +137,12 @@ def test_runner_slide_controls_do_not_trigger_pptx_artifact_detection(tmp_path: 
         ["Player can move left/right between 3 lanes, jump, and slide using keyboard controls."],
     )
 
-    assert expected_artifact_suffix(run, run.state, run.state.acceptance_criteria[0]) == ""
-    assert artifact_verification_command(run, run.state, run.state.acceptance_criteria[0]) == ""
+    assert expected_artifact_suffix(run, run.state, run.state.acceptance_criteria[0]) == ".html"
+    assert ".pptx" not in artifact_verification_command(run, run.state, run.state.acceptance_criteria[0])
+    action = artifact_creation_action(run, run.state)
+    assert action is not None
+    assert action["tool"] == "file_write"
+    assert action["args"]["path"] == "_flyornith_create_webapp.py"
 
 
 def test_context_compiler_uses_compact_sections(tmp_path: Path) -> None:
