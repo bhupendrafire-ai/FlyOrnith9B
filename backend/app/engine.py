@@ -3660,6 +3660,8 @@ class AgentLoopEngine:
         for item in rank_acceptance_recommendations(rank_run):
             if suppress_verification and item.label == "verification":
                 continue
+            if item.label == "verification" and self._open_edit_required_without_evidence(state):
+                continue
             if not item.available and not allow_ask_user:
                 continue
             if item.tool_kind == "patch_propose":
@@ -3668,6 +3670,16 @@ class AgentLoopEngine:
             if action:
                 return self._attach_recommendation_trace(state, item, action, source=source)
         return None
+
+    def _open_edit_required_without_evidence(self, state: RunState) -> bool:
+        if self._has_workspace_material_for_browser_proof(state):
+            return False
+        return any(
+            item.status != "verified"
+            and "edit" in set(item.required_labels)
+            and "edit" not in set(item.matched_labels)
+            for item in state.acceptance_evidence
+        )
 
     def _trace_action_if_recommended(
         self,

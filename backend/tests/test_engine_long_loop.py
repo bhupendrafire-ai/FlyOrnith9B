@@ -3248,6 +3248,23 @@ def test_dashboard_screenshot_does_not_verify_non_dashboard_app(tmp_path: Path) 
     assert run.state.acceptance_evidence[0].matched_labels == []
 
 
+def test_recommended_tool_waits_for_edit_evidence_before_verification(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    workspace = tmp_path / "empty-source-files"
+    workspace.mkdir()
+    run = engine.store.create_run(
+        "Build a browser web app",
+        "Edit before verify",
+        str(workspace),
+        ["Project source files are implemented in the workspace and index.html exists."],
+    )
+    engine._ensure_acceptance_evidence(run.state)
+
+    action = engine._recommended_tool_action(run.state)
+
+    assert action is None
+
+
 
 def test_choose_action_uses_readiness_source_ref_preview_recommendation_before_model(tmp_path: Path) -> None:
     async def run() -> None:
