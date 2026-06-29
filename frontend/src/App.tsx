@@ -86,6 +86,7 @@ import {
   type ActivityFeedItem,
   type WorkbenchArtifact,
 } from "./activityFeed";
+import { formatLocalTextTimestamps, formatLocalTimestamp } from "./time";
 
 const emptyGoal =
   "Inspect this workspace, check Obsidian first, make a small safe improvement, run checks, and summarize.";
@@ -1237,9 +1238,11 @@ export function App() {
           <strong>{message.title}</strong>
           <span>{message.role}</span>
         </div>
-        <p>{message.body}</p>
-        {message.meta?.length ? <small>{message.meta.join(" / ")}</small> : null}
-        {message.timestamp ? <small>{message.timestamp}</small> : null}
+        <p>{formatLocalTextTimestamps(message.body)}</p>
+        {message.meta?.length ? (
+          <small>{message.meta.map((item) => formatLocalTextTimestamps(item)).join(" / ")}</small>
+        ) : null}
+        {message.timestamp ? <small title={message.timestamp}>{formatLocalTimestamp(message.timestamp)}</small> : null}
         <div className="inline-actions">{renderFeedActions(message)}</div>
       </article>
     );
@@ -1482,9 +1485,9 @@ export function App() {
                     <article className={`required-action-card ${item.severity ?? "watch"}`} key={item.id}>
                       <div>
                         <strong>{item.title}</strong>
-                        <span>{item.meta?.join(" / ")}</span>
+                        <span>{item.meta?.map((meta) => formatLocalTextTimestamps(meta)).join(" / ")}</span>
                       </div>
-                      <p>{item.body}</p>
+                      <p>{formatLocalTextTimestamps(item.body)}</p>
                       <div className="inline-actions">{renderFeedActions(item)}</div>
                     </article>
                   ))
@@ -1534,7 +1537,7 @@ export function App() {
                           <strong>{artifact.title}</strong>
                         )}
                       </div>
-                      <p>{artifact.summary}</p>
+                      <p>{formatLocalTextTimestamps(artifact.summary)}</p>
                     </article>
                   ))
                 )}
@@ -1565,9 +1568,9 @@ export function App() {
                         <strong>{artifact.title}</strong>
                       )}
                     </div>
-                    <p>{artifact.summary}</p>
+                    <p>{formatLocalTextTimestamps(artifact.summary)}</p>
                     {artifact.path ? <code>{artifact.path}</code> : null}
-                    {artifact.timestamp ? <small>{artifact.timestamp}</small> : null}
+                    {artifact.timestamp ? <small title={artifact.timestamp}>{formatLocalTimestamp(artifact.timestamp)}</small> : null}
                   </article>
                 ))
               )}
@@ -1588,7 +1591,7 @@ export function App() {
                 <a href={`${API_BASE}/api/runs/${replay.run_id}/replay.md`} target="_blank" rel="noreferrer">
                   Open replay markdown
                 </a>
-                <pre>{replay.handoff.resume_prompt}</pre>
+                <pre>{formatLocalTextTimestamps(replay.handoff.resume_prompt)}</pre>
               </>
             ) : (
               <p>No replay loaded.</p>
@@ -1599,7 +1602,7 @@ export function App() {
               <FileText size={18} />
               Obsidian
             </h2>
-            <pre>{notes || "No run note loaded."}</pre>
+            <pre>{formatLocalTextTimestamps(notes || "No run note loaded.")}</pre>
           </section>
         </section>
 
@@ -1750,13 +1753,15 @@ export function App() {
                         {item.severity} / {item.reason}
                       </strong>
                       <span>{item.title}</span>
-                      <p>{item.action}</p>
+                      <p>{formatLocalTextTimestamps(item.action)}</p>
                       <small>
                         {item.status} / priority {item.priority}
                         {item.approval_id ? ` / approval ${item.approval_id}` : ""}
                         {item.promotion_gate ? " / promotion gate" : ""}
                       </small>
-                      {item.details.length ? <small>{item.details.join(" / ")}</small> : null}
+                      {item.details.length ? (
+                        <small>{item.details.map((detail) => formatLocalTextTimestamps(detail)).join(" / ")}</small>
+                      ) : null}
                     </div>
                     <div className="queue-actions">
                       <button type="button" onClick={() => openQueueItem(item.run_id)}>
@@ -1948,8 +1953,8 @@ export function App() {
               <div className="queue-item blocked">
                 <div>
                   <strong>Readiness Source Refs</strong>
-                  <p>{readinessSourceRefGate.action}</p>
-                  <small>{readinessSourceRefGate.meta}</small>
+                  <p>{formatLocalTextTimestamps(readinessSourceRefGate.action)}</p>
+                  <small>{formatLocalTextTimestamps(readinessSourceRefGate.meta)}</small>
                 </div>
                 <div className="queue-actions">
                   <button type="button" onClick={refreshReadinessSourceRefsFromGate} disabled={busy || !selectedId}>
@@ -2017,14 +2022,16 @@ export function App() {
               <div className="queue-item watch">
                 <div>
                   <strong>Desktop Effect Proof</strong>
-                  <p>{desktopEffectProofGate.action}</p>
-                  <small>{desktopEffectProofGate.meta}</small>
+                  <p>{formatLocalTextTimestamps(desktopEffectProofGate.action)}</p>
+                  <small>{formatLocalTextTimestamps(desktopEffectProofGate.meta)}</small>
                   {desktopEffectProof ? (
                     <small>
                       {desktopEffectProof.requires_attention
                         ? `latest action: ${desktopEffectProof.latest_action_tool || "desktop action"} ${desktopEffectProof.latest_action_summary}`
                         : desktopEffectProof.proof_snapshot
-                          ? `latest proof: ${desktopEffectProof.proof_snapshot.title} ${desktopEffectProof.proof_snapshot.timestamp}`
+                          ? `latest proof: ${desktopEffectProof.proof_snapshot.title} ${formatLocalTimestamp(
+                              desktopEffectProof.proof_snapshot.timestamp,
+                            )}`
                           : desktopEffectProof.proof_summary
                             ? `latest proof: ${desktopEffectProof.proof_tool} ${desktopEffectProof.proof_summary}`
                             : desktopEffectProof.recommended_action}
@@ -2074,7 +2081,7 @@ export function App() {
               ].filter((item): item is string => Boolean(item))}
               empty="No packed action details."
             />
-            <pre>{selected?.state.action_context?.compact_prompt || "No action context pack yet."}</pre>
+            <pre>{formatLocalTextTimestamps(selected?.state.action_context?.compact_prompt || "No action context pack yet.")}</pre>
           </Panel>
           <Panel title="Self Scaffold" icon={<Wrench size={18} />}>
             <p className="focus-text">{selfScaffold?.summary || "No self-scaffold report yet."}</p>
@@ -2203,7 +2210,11 @@ export function App() {
               <div className="queue-item watch">
                 <div>
                   <strong>Desktop Proof Repair</strong>
-                  <p>{desktopEffectProofGate.action || "Repair stale desktop-effect proof handoff metadata."}</p>
+                  <p>
+                    {formatLocalTextTimestamps(
+                      desktopEffectProofGate.action || "Repair stale desktop-effect proof handoff metadata.",
+                    )}
+                  </p>
                   <small>
                     {selectedDesktopEffectQueueItem
                       ? `${selectedDesktopEffectQueueItem.method} ${selectedDesktopEffectQueueItem.endpoint}`
@@ -3025,7 +3036,7 @@ export function App() {
             <List
               items={modelAdaptationReviews
                 .slice(0, 5)
-                .map((item) => `${item.decision}: ${item.proposal.summary} (${item.created_at})`)}
+                .map((item) => `${item.decision}: ${item.proposal.summary} (${formatLocalTimestamp(item.created_at)})`)}
               empty="No reviewed adaptation history."
             />
             <List
@@ -3101,7 +3112,9 @@ export function App() {
                   ? `latest action: ${desktopEffectProof.latest_action_tool} ${desktopEffectProof.latest_action_summary}`
                   : "",
                 desktopEffectProof?.proof_snapshot
-                  ? `proof snapshot: ${desktopEffectProof.proof_snapshot.title} ${desktopEffectProof.proof_snapshot.timestamp} ${desktopEffectProof.proof_snapshot.path}`
+                  ? `proof snapshot: ${desktopEffectProof.proof_snapshot.title} ${formatLocalTimestamp(
+                      desktopEffectProof.proof_snapshot.timestamp,
+                    )} ${desktopEffectProof.proof_snapshot.path}`
                   : "",
                 desktopEffectProof?.proof_summary
                   ? `proof result: ${desktopEffectProof.proof_tool} ${desktopEffectProof.proof_summary}`
@@ -3276,7 +3289,7 @@ export function App() {
                     <div>
                       <strong>{card.patch.title}</strong>
                       <span>{card.statusText}</span>
-                      <small>{card.meta}</small>
+                      <small>{formatLocalTextTimestamps(card.meta)}</small>
                     </div>
                     <button
                       type="button"
@@ -3682,7 +3695,7 @@ export function App() {
               .map((item) => `${item.severity}: ${item.summary}`)}
             empty="No completion audit issues."
           />
-          <pre>{selected?.state.handoff_summary.resume_prompt || "No handoff yet."}</pre>
+          <pre>{formatLocalTextTimestamps(selected?.state.handoff_summary.resume_prompt || "No handoff yet.")}</pre>
           <p className="focus-text">
             {selected?.state.context_snapshot?.generated_at
               ? `Context coverage ${selected.state.context_snapshot.coverage_status}: ${selected.state.context_snapshot.selected_section_count} selected, ${selected.state.context_snapshot.dropped_section_count} dropped.`
@@ -3700,7 +3713,7 @@ export function App() {
             ].filter((item): item is string => Boolean(item))}
             empty="No context coverage details."
           />
-          <pre>{selected?.state.context_snapshot.prompt_preview || "No compiled context yet."}</pre>
+          <pre>{formatLocalTextTimestamps(selected?.state.context_snapshot.prompt_preview || "No compiled context yet.")}</pre>
         </section>
 
         <section className={activeView === "activity" ? "approval-band" : "approval-band view-hidden"}>
@@ -3712,8 +3725,8 @@ export function App() {
             <div className="queue-item blocked">
               <div>
                 <strong>Goal Confirmation</strong>
-                <p>{goalConfirmationGate.action}</p>
-                <small>{goalConfirmationGate.meta}</small>
+                <p>{formatLocalTextTimestamps(goalConfirmationGate.action)}</p>
+                <small>{formatLocalTextTimestamps(goalConfirmationGate.meta)}</small>
               </div>
             </div>
           ) : null}
@@ -3721,8 +3734,8 @@ export function App() {
             <div className="queue-item blocked">
               <div>
                 <strong>Desktop Approval</strong>
-                <p>{desktopApprovalGate.action}</p>
-                <small>{desktopApprovalGate.meta}</small>
+                <p>{formatLocalTextTimestamps(desktopApprovalGate.action)}</p>
+                <small>{formatLocalTextTimestamps(desktopApprovalGate.meta)}</small>
               </div>
             </div>
           ) : null}
@@ -3730,8 +3743,8 @@ export function App() {
             <div className="queue-item blocked">
               <div>
                 <strong>Source Promotion Approval</strong>
-                <p>{sourcePromotionApprovalGate.action}</p>
-                <small>{sourcePromotionApprovalGate.meta}</small>
+                <p>{formatLocalTextTimestamps(sourcePromotionApprovalGate.action)}</p>
+                <small>{formatLocalTextTimestamps(sourcePromotionApprovalGate.meta)}</small>
               </div>
             </div>
           ) : null}
@@ -3795,8 +3808,8 @@ export function App() {
                     <strong>{message.title}</strong>
                     <span>{message.role}</span>
                   </div>
-                  <p>{message.body}</p>
-                  {message.timestamp ? <small>{message.timestamp}</small> : null}
+                  <p>{formatLocalTextTimestamps(message.body)}</p>
+                  {message.timestamp ? <small title={message.timestamp}>{formatLocalTimestamp(message.timestamp)}</small> : null}
                 </article>
               ))
             )}
@@ -3835,9 +3848,11 @@ export function App() {
                       <strong>{artifact.title}</strong>
                     )}
                   </div>
-                  <p>{artifact.summary}</p>
+                  <p>{formatLocalTextTimestamps(artifact.summary)}</p>
                   {artifact.path ? <code>{artifact.path}</code> : null}
-                  {artifact.timestamp ? <small>{artifact.timestamp}</small> : null}
+                  {artifact.timestamp ? (
+                    <small title={artifact.timestamp}>{formatLocalTimestamp(artifact.timestamp)}</small>
+                  ) : null}
                 </article>
               ))
             )}
@@ -3853,7 +3868,8 @@ export function App() {
             {events.map((event) => (
               <article key={event.id}>
                 <span>{event.kind}</span>
-                <p>{event.message}</p>
+                <p>{formatLocalTextTimestamps(event.message)}</p>
+                <small title={event.timestamp}>{formatLocalTimestamp(event.timestamp)}</small>
               </article>
             ))}
           </div>
@@ -3882,7 +3898,7 @@ export function App() {
                 })}
                 empty="No approvals recorded."
               />
-              <pre>{replay.markdown.slice(0, 2200)}</pre>
+              <pre>{formatLocalTextTimestamps(replay.markdown.slice(0, 2200))}</pre>
             </>
           ) : (
             <p className="muted">No replay bundle yet.</p>
@@ -3894,7 +3910,7 @@ export function App() {
             <FileText size={18} />
             Obsidian
           </h2>
-          <pre>{notes || "No run note yet."}</pre>
+          <pre>{formatLocalTextTimestamps(notes || "No run note yet.")}</pre>
         </section>
       </aside>
     </main>
@@ -3916,12 +3932,12 @@ function ApprovalPreview({ approval }: { approval: ApprovalReviewRecord }) {
 
   return (
     <div className="approval-preview">
-      <p>{approval.summary || stringValue(preview?.summary) || "Review compact approval preview."}</p>
+      <p>{formatLocalTextTimestamps(approval.summary || stringValue(preview?.summary) || "Review compact approval preview.")}</p>
       {approval.high_risk && <small>high risk approval</small>}
       <small>
         {approval.reviewed
           ? `reviewed ${approval.review_count} time${approval.review_count === 1 ? "" : "s"}${
-              approval.latest_reviewed_at ? ` at ${approval.latest_reviewed_at}` : ""
+              approval.latest_reviewed_at ? ` at ${formatLocalTimestamp(approval.latest_reviewed_at)}` : ""
             }`
           : "not reviewed yet"}
       </small>
@@ -3930,7 +3946,7 @@ function ApprovalPreview({ approval }: { approval: ApprovalReviewRecord }) {
           {fields.map((field) => (
             <li key={stringValue(field.label) || stringValue(field.value)}>
               <strong>{stringValue(field.label) || "field"}</strong>
-              <span>{stringValue(field.value) || "present"}</span>
+              <span>{formatLocalTextTimestamps(stringValue(field.value) || "present")}</span>
             </li>
           ))}
         </ul>
@@ -4059,7 +4075,7 @@ function List({ items, empty }: { items: string[]; empty: string }) {
   return (
     <ul>
       {items.slice(-8).map((item, index) => (
-        <li key={`${item}-${index}`}>{item}</li>
+        <li key={`${item}-${index}`}>{formatLocalTextTimestamps(item)}</li>
       ))}
     </ul>
   );
@@ -4070,7 +4086,7 @@ function Numbered({ items, empty }: { items: string[]; empty: string }) {
   return (
     <ol>
       {items.map((item, index) => (
-        <li key={`${item}-${index}`}>{item}</li>
+        <li key={`${item}-${index}`}>{formatLocalTextTimestamps(item)}</li>
       ))}
     </ol>
   );

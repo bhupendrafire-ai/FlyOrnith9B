@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from app.memory import ObsidianMemory
@@ -36,6 +37,26 @@ def test_run_notes_redact_secret_like_values(tmp_path: Path) -> None:
 
     assert "super-secret-value" not in note
     assert "[REDACTED]" in note
+
+
+def test_daily_checkpoint_formats_run_started_in_local_time(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run(
+        goal="Keep human timestamps local",
+        title="Local timestamp checkpoint",
+        workspace_path=str(tmp_path),
+        acceptance_criteria=[],
+    ).model_copy(update={"created_at": "2026-06-29T10:26:20+00:00"})
+
+    memory = ObsidianMemory(vault)
+    memory.append_run_started(run)
+    memory.append_checkpoint(run, run.state, "paused")
+    daily = next((vault / "Daily").glob("*.md")).read_text(encoding="utf-8")
+
+    assert "- Started: 2026-06-29T10:26:20+00:00" not in daily
+    assert re.search(r"- Started: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}", daily)
+
 
 def test_checkpoint_notes_include_report_integrity_refresh_reason(tmp_path: Path) -> None:
     vault = tmp_path / "vault"

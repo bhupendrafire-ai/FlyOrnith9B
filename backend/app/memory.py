@@ -63,7 +63,7 @@ class ObsidianMemory:
         return MemoryContext(hits, warnings)
 
     def append_run_started(self, run: RunRecord) -> None:
-        started = datetime.now().isoformat(timespec="seconds")
+        started = self._local_timestamp()
         section = (
             f"\n\n## Agent Run: {self._sanitize_title(run.title)}\n"
             f"- Started: {started}\n"
@@ -90,7 +90,7 @@ class ObsidianMemory:
         self._write_run_note(run.id, run_note, mode="w")
 
     def append_checkpoint(self, run: RunRecord, state: RunState, status: str) -> None:
-        now = datetime.now().isoformat(timespec="seconds")
+        now = self._local_timestamp()
         section = (
             f"\n\n### Checkpoint: {now}\n"
             f"- Status: {status}\n"
@@ -115,7 +115,7 @@ class ObsidianMemory:
 
         daily_section = (
             f"\n\n## Agent Run: {self._sanitize_title(run.title)}\n"
-            f"- Started: {run.created_at}\n"
+            f"- Started: {self._local_timestamp(run.created_at)}\n"
             f"- Workspace: {run.workspace_path}\n"
             f"- Goal: {self._sanitize_text(run.goal)}\n"
             f"- Status: {status}\n"
@@ -136,7 +136,7 @@ class ObsidianMemory:
         self._append_daily(daily_section)
 
     def append_final(self, run: RunRecord, state: RunState) -> None:
-        now = datetime.now().isoformat(timespec="seconds")
+        now = self._local_timestamp()
         section = (
             f"\n\n## Final Summary: {now}\n"
             f"- Status: {run.status}\n"
@@ -232,6 +232,15 @@ class ObsidianMemory:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open(mode, encoding="utf-8") as handle:
             handle.write(self._sanitize_text(content))
+
+    def _local_timestamp(self, value: str | None = None) -> str:
+        if not value:
+            return datetime.now().astimezone().isoformat(timespec="seconds").replace("T", " ")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return self._sanitize_text(value)
+        return parsed.astimezone().isoformat(timespec="seconds").replace("T", " ")
 
     def _run_note_path(self, run_id: str) -> Path:
         return self.vault_path / "Agent Runs" / f"{run_id}.md"
