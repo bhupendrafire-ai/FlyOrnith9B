@@ -286,7 +286,7 @@ def build_action_readiness(
             )
         return _report(run, resume_decisions, task, "needs_proof", True, recommendation.action, suggested_tool, suggested_label, issues)
 
-    if state.run_health.recommended_action == "verify":
+    if state.run_health.recommended_action == "verify" and not _all_acceptance_verified(state):
         issues.append(
             ActionReadinessIssue(
                 id="verification_recommended",
@@ -328,6 +328,10 @@ def _has_edit_evidence(state: Any) -> bool:
         return True
     edit_tools = {"file_write", "patch_apply", "patch_propose", "workspace_promote"}
     return any(call.ok and call.name in edit_tools for call in state.tool_calls)
+
+
+def _all_acceptance_verified(state: Any) -> bool:
+    return bool(state.acceptance_evidence) and all(item.status == "verified" for item in state.acceptance_evidence)
 
 
 def _browser_proof_requires_project_first(
@@ -384,7 +388,16 @@ def rank_acceptance_recommendations(run: RunRecord) -> list[AcceptanceEvidenceRe
     preview = state.readiness_source_ref_preview
     missing_source_labels = set(state.source_evidence.missing_labels)
     readiness_missing_source_labels = set(preview.missing_source_evidence_labels)
-    recommendations = list(state.acceptance_recommendations)
+    verified_criteria = {
+        (item.id, item.criterion)
+        for item in state.acceptance_evidence
+        if item.status == "verified"
+    }
+    recommendations = [
+        item
+        for item in state.acceptance_recommendations
+        if (item.criterion_id, item.criterion) not in verified_criteria
+    ]
     recommendations.extend(_readiness_source_ref_recommendations(run, recommendations))
     satisfied_pairs = {
         (trace.label, trace.selected_tool or trace.recommended_tool)
@@ -453,6 +466,8 @@ def _fallback_recommendation(run: RunRecord) -> AcceptanceEvidenceRecommendation
         missing = [label for label in labels if label not in set(item.matched_labels)]
         label = missing[0] if missing else "verification"
         return _recommendation_for_label(run, item.id or "criterion-1", item.criterion, label)
+    if state.acceptance_evidence:
+        return None
     for index, criterion in enumerate(state.acceptance_criteria):
         labels = infer_required_labels(criterion)
         label = labels[0] if labels else "verification"

@@ -3265,6 +3265,30 @@ def test_recommended_tool_waits_for_edit_evidence_before_verification(tmp_path: 
     assert action is None
 
 
+def test_action_readiness_does_not_ask_for_proof_when_acceptance_verified(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Finish verified work",
+        "Verified",
+        str(tmp_path),
+        ["Code is organized, readable, and basic build/verification checks pass."],
+    )
+    run.state.milestone = "act"
+    engine._ensure_acceptance_evidence(run.state)
+    item = run.state.acceptance_evidence[0]
+    item.status = "verified"
+    item.matched_labels = list(item.required_labels)
+    for label in item.required_labels:
+        item.label_checked_at[label] = "2026-06-29T10:00:00+00:00"
+    run.state.run_health.recommended_action = "verify"
+    run.state.run_health.next_actions = ["Run focused acceptance verification."]
+
+    report = engine._build_action_readiness(run, run.state)
+
+    assert report.status == "ready"
+    assert report.suggested_tool == ""
+
+
 
 def test_choose_action_uses_readiness_source_ref_preview_recommendation_before_model(tmp_path: Path) -> None:
     async def run() -> None:
