@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
 
@@ -23,12 +23,16 @@ def build_objective_readiness(
         _patch_item(run, tool_names),
         _task_graph_item(run),
         _context_item(run),
+        _resume_quality_item(run),
         _repo_map_item(run),
         _verification_item(run),
         _failure_recovery_item(run),
         _replay_audit_item(run),
         _obsidian_handoff_item(run),
         _goal_evolution_item(run),
+        _git_checkpoint_item(run),
+        _promotion_audit_item(run),
+        _resume_handoff_diff_item(run),
     ]
     outcomes = getattr(state, "objective_readiness_proof_outcomes", [])
     _apply_proof_outcomes(items, outcomes)
@@ -50,7 +54,7 @@ def build_objective_readiness(
         _next_action_with_proof(item)
         for item in items
         if item.status != "verified" and item.next_action
-    ][:5]
+    ][:8]
     return ObjectiveReadinessReport(
         run_id=run.id,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -392,19 +396,104 @@ def _task_graph_item(run: RunRecord) -> ObjectiveReadinessItem:
 def _context_item(run: RunRecord) -> ObjectiveReadinessItem:
     budget = run.state.context_budget
     snapshot = run.state.context_snapshot
-    if snapshot.generated_at and budget.pressure != "high":
+    if snapshot.generated_at and budget.pressure != "high" and snapshot.coverage_status != "critical":
         return _item(
             "compact_context",
             "Prompts should use compact reports and second-brain context instead of raw history.",
             "verified",
-            [f"snapshot_tokens={snapshot.estimated_tokens}", f"target={budget.target_tokens}", f"pressure={budget.pressure}"],
+            [
+                f"snapshot_tokens={snapshot.estimated_tokens}",
+                f"target={budget.target_tokens}",
+                f"pressure={budget.pressure}",
+                f"coverage={snapshot.coverage_status}",
+                f"dropped={snapshot.dropped_section_count}",
+            ],
         )
     return _item(
         "compact_context",
         "Prompts should use compact reports and second-brain context instead of raw history.",
         "partial",
-        [f"snapshot={snapshot.generated_at or 'missing'}", f"pressure={budget.pressure}"],
-        "Compile a fresh context snapshot before the next model action.",
+        [
+            f"snapshot={snapshot.generated_at or 'missing'}",
+            f"pressure={budget.pressure}",
+            f"coverage={snapshot.coverage_status}",
+            f"required_missing={','.join(snapshot.required_sections_missing) if snapshot.required_sections_missing else 'none'}",
+        ],
+        snapshot.recommended_action or "Compile a fresh context snapshot before the next model action.",
+    )
+
+
+def _resume_quality_item(run: RunRecord) -> ObjectiveReadinessItem:
+    report = run.state.resume_prompt_quality
+    if not report.generated_at:
+        report = run.state.handoff_summary.resume_prompt_quality
+    if report.generated_at and report.status == "ready":
+        return _item(
+            "resume_prompt_quality",
+            "Resume prompts should give Ornith a concrete next action and compact-context guardrails after compaction.",
+            "verified",
+            [
+                report.summary,
+                f"score={report.score}",
+                f"concrete_next={report.concrete_next_action}",
+                f"context={report.context_coverage_status}",
+            ],
+        )
+    if report.generated_at:
+        status = "missing" if report.status == "blocked" else "partial"
+        return _item(
+            "resume_prompt_quality",
+            "Resume prompts should give Ornith a concrete next action and compact-context guardrails after compaction.",
+            status,
+            [
+                report.summary,
+                f"score={report.score}",
+                f"issues={len(report.issues)}",
+                f"context={report.context_coverage_status}",
+            ],
+            report.recommended_action,
+        )
+    return _item(
+        "resume_prompt_quality",
+        "Resume prompts should give Ornith a concrete next action and compact-context guardrails after compaction.",
+        "partial",
+        ["No resume prompt quality report has been generated."],
+        "Generate a resume prompt quality report before trusting resume or auto-resume.",
+    )
+
+
+def _resume_handoff_diff_item(run: RunRecord) -> ObjectiveReadinessItem:
+    report = run.state.resume_handoff_diff
+    if not report.generated_at:
+        report = run.state.handoff_summary.resume_handoff_diff
+    if report.generated_at and report.status in {"stable", "no_baseline"}:
+        return _item(
+            "resume_handoff_diff",
+            "Resume preflight baselines should be compared against current handoff quality and context coverage before acting.",
+            "verified" if report.status == "stable" else "partial",
+            [
+                report.summary,
+                f"baseline={report.latest_accepted_event_id or 'none'}",
+                f"changes={report.changed_count}",
+                f"blockers={report.blocker_count}",
+            ],
+            report.recommended_action if report.status == "no_baseline" else "",
+        )
+    if report.generated_at:
+        status = "missing" if report.status == "blocked" else "partial"
+        return _item(
+            "resume_handoff_diff",
+            "Resume preflight baselines should be compared against current handoff quality and context coverage before acting.",
+            status,
+            [report.summary, f"changes={report.changed_count}", f"blockers={report.blocker_count}"],
+            report.recommended_action,
+        )
+    return _item(
+        "resume_handoff_diff",
+        "Resume preflight baselines should be compared against current handoff quality and context coverage before acting.",
+        "partial",
+        ["No resume handoff drift report has been generated."],
+        "Generate a resume handoff drift report before trusting a resumed long loop.",
     )
 
 
@@ -532,6 +621,88 @@ def _goal_evolution_item(run: RunRecord) -> ObjectiveReadinessItem:
     )
 
 
+
+def _promotion_audit_item(run: RunRecord) -> ObjectiveReadinessItem:
+    report = run.state.promotion_audit
+    if not report.generated_at:
+        report = run.state.handoff_summary.promotion_audit
+    if report.generated_at and report.status in {"ready", "not_applicable"}:
+        return _item(
+            "source_promotion_audit",
+            "Source workspace promotion should be gated by a compact audit tying diff, patches, verification, and resume drift together.",
+            "verified",
+            [
+                report.summary,
+                f"ready={report.ready_to_promote}",
+                f"changed={report.changed_file_count}",
+                f"verification={report.latest_verification or 'none'}",
+                f"drift={report.resume_drift_status}",
+            ],
+        )
+    if report.generated_at:
+        status = "missing" if report.status == "blocked" else "partial"
+        return _item(
+            "source_promotion_audit",
+            "Source workspace promotion should be gated by a compact audit tying diff, patches, verification, and resume drift together.",
+            status,
+            [
+                report.summary,
+                f"status={report.status}",
+                f"changed={report.changed_file_count}",
+                f"issues={len(report.issues)}",
+            ],
+            report.recommended_action,
+        )
+    return _item(
+        "source_promotion_audit",
+        "Source workspace promotion should be gated by a compact audit tying diff, patches, verification, and resume drift together.",
+        "partial",
+        ["No source promotion audit has been generated."],
+        "Generate a promotion audit before requesting source workspace promotion.",
+    )
+
+
+def _git_checkpoint_item(run: RunRecord) -> ObjectiveReadinessItem:
+    report = run.state.git_checkpoint
+    if not report.generated_at:
+        return _item(
+            "git_checkpoint_cadence",
+            "Long coding runs maintain frequent scoped Git checkpoints and surface GitHub push readiness.",
+            "partial",
+            ["No Git checkpoint report has been generated for this run yet."],
+            "Run git_checkpoint so Ornith and the operator can see commit and push posture.",
+        )
+    if report.status == "not_repo":
+        return _item(
+            "git_checkpoint_cadence",
+            "Long coding runs maintain frequent scoped Git checkpoints and surface GitHub push readiness.",
+            "missing",
+            [report.summary],
+            "Use a Git-backed workspace before claiming commit cadence readiness.",
+        )
+    if report.remote_count == 0:
+        return _item(
+            "git_checkpoint_cadence",
+            "Long coding runs maintain frequent scoped Git checkpoints and surface GitHub push readiness.",
+            "partial",
+            [report.summary, "No remote is configured for GitHub push readiness."],
+            "Configure a GitHub remote; continue making scoped local commits meanwhile.",
+        )
+    if report.status in {"verify_first", "commit_recommended", "push_recommended"}:
+        return _item(
+            "git_checkpoint_cadence",
+            "Long coding runs maintain frequent scoped Git checkpoints and surface GitHub push readiness.",
+            "partial",
+            [report.summary, report.recommended_action],
+            report.recommended_action,
+        )
+    return _item(
+        "git_checkpoint_cadence",
+        "Long coding runs maintain frequent scoped Git checkpoints and surface GitHub push readiness.",
+        "verified",
+        [report.summary, f"remote_count={report.remote_count}", f"github_remote_count={report.github_remote_count}"],
+    )
+
 def _item(
     item_id: str,
     requirement: str,
@@ -592,6 +763,30 @@ _PLAYBOOK: dict[str, ObjectiveReadinessProof] = {
         command_hint="GET /api/runs/{run_id}/timeline context_snapshot",
         success_signal="Context snapshot has generated_at, estimated_tokens, and low or medium pressure.",
     ),
+    "resume_prompt_quality": ObjectiveReadinessProof(
+        tool_kind="file_read",
+        evidence_label="resume",
+        strategy="dashboard_api_check",
+        action="Inspect resume-quality output and confirm the handoff has a concrete next action plus compact-context guardrails.",
+        command_hint="GET /api/runs/{run_id}/resume-quality",
+        success_signal="Resume prompt quality report is ready with concrete_next_action=true and no blockers.",
+    ),
+    "source_promotion_audit": ObjectiveReadinessProof(
+        tool_kind="file_read",
+        evidence_label="promotion",
+        strategy="dashboard_api_check",
+        action="Inspect promotion-audit output and confirm source promotion is ready or has a concrete verification/drift blocker.",
+        command_hint="GET /api/runs/{run_id}/promotion-audit",
+        success_signal="Promotion audit is ready/not applicable or explains the exact verification/drift action required before source promotion.",
+    ),
+    "resume_handoff_diff": ObjectiveReadinessProof(
+        tool_kind="file_read",
+        evidence_label="resume",
+        strategy="dashboard_api_check",
+        action="Inspect resume-handoff drift output and confirm current context is stable against the accepted preflight baseline.",
+        command_hint="GET /api/runs/{run_id}/resume-handoff-diff",
+        success_signal="Resume handoff drift report is stable or explains why a fresh preflight is required before acting.",
+    ),
     "repo_map": ObjectiveReadinessProof(
         tool_kind="file_read",
         evidence_label="repo_map",
@@ -640,6 +835,14 @@ _PLAYBOOK: dict[str, ObjectiveReadinessProof] = {
         command_hint="POST /api/runs/{run_id}/goal/review or dashboard Review",
         success_signal="Goal review produces a model interaction or pending goal proposal, and active goal changes only after user confirmation.",
         requires_approval=True,
+    ),
+    "git_checkpoint_cadence": ObjectiveReadinessProof(
+        tool_kind="git_checkpoint",
+        evidence_label="git",
+        strategy="commit_readiness",
+        action="Inspect Git checkpoint posture before handoff and after verified changes.",
+        command_hint="git_checkpoint or GET /api/runs/{run_id}/git-checkpoint",
+        success_signal="Git checkpoint report shows repository status, changed files, remotes, and commit/push recommendation.",
     ),
 }
 

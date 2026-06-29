@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import subprocess
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.engine import AgentLoopEngine
 from app.events import EventBroker
-from app.memory import ObsidianMemory
+from app.memory import MemoryContext, ObsidianMemory
 from app.persistence import RunStore
 from app.readiness_completion import build_readiness_completion
 from app.schemas import (
@@ -16,26 +16,42 @@ from app.schemas import (
     AcceptanceRecommendationTrace,
     CompletionAuditReport,
     ContextBudget,
+    DesktopEffectProofReport,
     ObjectiveReadinessItem,
     ObjectiveReadinessProofPreference,
     OperatorActionDispatchRequest,
     OperatorDispatchRestartSmokeLedgerEntry,
     OperatorDispatchRestartSmokeLedgerReport,
     OperatorDispatchRestartSmokeReport,
+    OrnithPreflightWarningRecord,
+    OrnithPreflightWarningReport,
+    PostActionRetryDecisionRecord,
+    PatchApplication,
+    PatchProposal,
     ObjectiveReadinessProofOutcome,
     ObjectiveReadinessReport,
     PolicySimulationReport,
+    PromotionVerificationAttemptRecord,
+    PromotionVerificationReport,
     ReadinessRehearsalLedgerEntry,
+    ReadinessSourceRefPreviewReport,
+    ReadinessProofHistoryReport,
     ReadinessRehearsalLedgerReport,
     ReadinessRehearsalReport,
     ReadinessRehearsalStep,
     RunProgressReport,
     RecoveryPlan,
+    ResumeHandoffDiffReport,
+    SelfScaffoldChangeRecord,
+    SelfScaffoldReport,
     RunLease,
+    TaskNode,
     ToolCallRecord,
+    DesktopSnapshot,
+    WebSource,
     WorkspaceIsolation,
 )
-from app.tools import ToolResult
+from app.tools import ToolResult, ToolRunner
 
 from conftest import make_config
 
@@ -78,6 +94,10 @@ OBJECTIVE_READINESS_ITEM_IDS = [
     "replay_audit_trails",
     "obsidian_handoffs",
     "goal_evolution",
+    "git_checkpoint_cadence",
+    "source_promotion_audit",
+    "resume_prompt_quality",
+    "resume_handoff_diff",
 ]
 
 
@@ -113,8 +133,15 @@ def passed_rehearsal_ledger(run_id: str = "run-smoke") -> ReadinessRehearsalLedg
         refused_event_id=1,
         accepted_event_id=2,
         completed_event_id=3,
-        step_count=7,
-        passed_steps=7,
+        self_scaffold_reviewed=True,
+        self_scaffold_review_event_id=4,
+        self_scaffold_reviewed_change_count=1,
+        post_review_handoff_goal_preserved=True,
+        post_review_handoff_next_action_preserved=True,
+        post_review_resume_prompt_goal_preserved=True,
+        post_review_resume_prompt_next_action_preserved=True,
+        step_count=9,
+        passed_steps=9,
     )
     return ReadinessRehearsalLedgerReport(
         generated_at="2026-06-27T08:00:00+00:00",
@@ -174,6 +201,13 @@ def seed_passed_rehearsal(engine: AgentLoopEngine, tmp_path: Path, generated_at:
         refused_event_id=1,
         accepted_event_id=2,
         completed_event_id=3,
+        self_scaffold_reviewed=True,
+        self_scaffold_review_event_id=4,
+        self_scaffold_reviewed_change_count=1,
+        post_review_handoff_goal_preserved=True,
+        post_review_handoff_next_action_preserved=True,
+        post_review_resume_prompt_goal_preserved=True,
+        post_review_resume_prompt_next_action_preserved=True,
         compact_context_tokens=1200,
         replay_attached=True,
         handoff_attached=True,
@@ -184,7 +218,7 @@ def seed_passed_rehearsal(engine: AgentLoopEngine, tmp_path: Path, generated_at:
                 summary=f"Seed step {index} passed.",
                 event_id=index,
             )
-            for index in range(1, 8)
+            for index in range(1, 10)
         ],
     )
     run.state.readiness_rehearsal = report
@@ -482,6 +516,15 @@ def test_readiness_completion_gate_allows_harness_milestone_claim(tmp_path: Path
         str(tmp_path),
         ["Harness readiness is verified"],
     )
+    run.state.acceptance_evidence.append(
+        AcceptanceCriterionEvidence(
+            id="source-visible-readiness",
+            criterion="Readiness proof has web and browser source refs.",
+            status="verified",
+            required_labels=["web", "browser"],
+            matched_labels=["web", "browser"],
+        )
+    )
     items = [
         ObjectiveReadinessItem(
             id=f"item-{index}",
@@ -520,6 +563,33 @@ def test_readiness_completion_gate_allows_harness_milestone_claim(tmp_path: Path
         completion,
         passed_rehearsal_ledger(),
         passed_dispatch_restart_smoke_ledger(),
+        ornith_preflight_warnings=OrnithPreflightWarningReport(run_id=run.id, generated_at="2026-06-28T00:00:00+00:00"),
+        self_scaffold=SelfScaffoldReport(
+            run_id=run.id,
+            generated_at="2026-06-28T00:00:00+00:00",
+            status="observed",
+            change_count=1,
+            reviewed_change_count=1,
+            review_count=1,
+            latest_review_event_id=22,
+            changes=[
+                SelfScaffoldChangeRecord(
+                    id="model_guard:accepted",
+                    kind="model_guard",
+                    status="observed",
+                    summary="Accepted guard review.",
+                )
+            ],
+        ),
+        readiness_proof_history=ReadinessProofHistoryReport(
+            run_id=run.id,
+            generated_at="2026-06-28T00:00:00+00:00",
+            status="complete",
+            source_evidence_ref_count=2,
+            source_evidence_labels=["browser", "web"],
+            source_evidence_summary="Readiness proof history links 2 compact source evidence artifact(s).",
+            latest_summary="Readiness claim source refs are available.",
+        ),
         require_rehearsal_ledger=True,
         require_dispatch_restart_smoke_ledger=True,
     )
@@ -528,8 +598,307 @@ def test_readiness_completion_gate_allows_harness_milestone_claim(tmp_path: Path
     assert report.can_claim_milestone is True
     assert report.confidence == "high"
     assert report.blocking_count == 0
-    assert any(check.id == "readiness_rehearsal" and check.status == "pass" for check in report.checks)
+    assert report.ornith_preflight_warning_count == 0
+    assert report.self_scaffold_status == "observed"
+    assert report.self_scaffold_pending_review_count == 0
+    assert report.self_scaffold_reviewed_change_count == 1
+    assert report.source_visible_required_label_count == 2
+    assert report.source_visible_matched_label_count == 2
+    assert report.readiness_proof_source_ref_count == 2
+    assert report.readiness_proof_source_ref_labels == ["browser", "web"]
+    assert report.source_visible_missing_ref_labels == []
+    source_ref_check = next(check for check in report.checks if check.id == "readiness_proof_source_refs")
+    assert source_ref_check.status == "pass"
+    assert "source_visible_labels=browser,web" in source_ref_check.evidence
+    rehearsal_check = next(check for check in report.checks if check.id == "readiness_rehearsal")
+    assert "self_scaffold_reviewed=True" in rehearsal_check.evidence
+    assert "self_scaffold_reviewed_changes=1" in rehearsal_check.evidence
+    assert "post_review_handoff_goal=True" in rehearsal_check.evidence
+    assert "post_review_resume_next=True" in rehearsal_check.evidence
+    assert any(check.id == "self_scaffold_review" and check.status == "pass" for check in report.checks)
+    assert rehearsal_check.status == "pass"
     assert any(check.id == "operator_dispatch_restart_smoke" and check.status == "pass" for check in report.checks)
+    assert any(check.id == "ornith_preflight_warnings" and check.status == "pass" for check in report.checks)
+
+
+def test_readiness_completion_gate_blocks_missing_source_ref_label(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Readiness missing source refs",
+        str(tmp_path),
+        ["Harness readiness has source-visible proof"],
+    )
+    run.state.acceptance_evidence.append(
+        AcceptanceCriterionEvidence(
+            id="source-visible-readiness",
+            criterion="Readiness proof has web and browser source refs.",
+            status="verified",
+            required_labels=["web", "browser"],
+            matched_labels=["web"],
+        )
+    )
+    items = [
+        ObjectiveReadinessItem(
+            id=f"item-{index}",
+            requirement=f"Requirement {index}",
+            status="verified",
+        )
+        for index in range(10)
+    ]
+    objective = ObjectiveReadinessReport(
+        run_id=run.id,
+        status="ready",
+        verified_count=10,
+        partial_count=0,
+        missing_count=0,
+        failed_count=0,
+        items=items,
+    )
+    completion = CompletionAuditReport(
+        run_id=run.id,
+        status="ready",
+        can_finish=True,
+        acceptance_total=1,
+        acceptance_verified=1,
+    )
+    progress = RunProgressReport(
+        run_id=run.id,
+        status="near_completion",
+        can_keep_running=True,
+        near_completion=True,
+    )
+
+    report = build_readiness_completion(
+        run,
+        objective,
+        progress,
+        completion,
+        passed_rehearsal_ledger(),
+        passed_dispatch_restart_smoke_ledger(),
+        ornith_preflight_warnings=OrnithPreflightWarningReport(run_id=run.id, generated_at="2026-06-28T00:00:00+00:00"),
+        self_scaffold=SelfScaffoldReport(
+            run_id=run.id,
+            generated_at="2026-06-28T00:00:00+00:00",
+            status="observed",
+        ),
+        readiness_proof_history=ReadinessProofHistoryReport(
+            run_id=run.id,
+            generated_at="2026-06-28T00:00:00+00:00",
+            status="partial",
+            source_evidence_ref_count=1,
+            source_evidence_labels=["web"],
+            source_evidence_summary="Readiness proof history links 1 compact source evidence artifact(s).",
+        ),
+        require_rehearsal_ledger=True,
+        require_dispatch_restart_smoke_ledger=True,
+    )
+
+    assert report.status == "blocked"
+    assert report.can_claim_milestone is False
+    assert report.source_visible_required_label_count == 2
+    assert report.source_visible_matched_label_count == 1
+    assert report.readiness_proof_source_ref_count == 1
+    assert report.readiness_proof_source_ref_labels == ["web"]
+    assert report.source_visible_missing_ref_labels == ["browser"]
+    check = next(check for check in report.checks if check.id == "readiness_proof_source_refs")
+    assert check.status == "block"
+    assert "missing_ref_labels=browser" in check.evidence
+    assert "source_ref_labels=web" in check.evidence
+    assert any("source evidence" in action for action in report.next_actions)
+def test_readiness_completion_gate_blocks_dirty_ornith_preflight_warning_history(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Readiness dirty preflight",
+        str(tmp_path),
+        ["Harness readiness is verified"],
+    )
+    items = [
+        ObjectiveReadinessItem(
+            id=f"item-{index}",
+            requirement=f"Requirement {index}",
+            status="verified",
+        )
+        for index in range(10)
+    ]
+    objective = ObjectiveReadinessReport(
+        run_id=run.id,
+        status="ready",
+        verified_count=10,
+        partial_count=0,
+        missing_count=0,
+        failed_count=0,
+        items=items,
+    )
+    completion = CompletionAuditReport(
+        run_id=run.id,
+        status="ready",
+        can_finish=True,
+        acceptance_total=1,
+        acceptance_verified=1,
+    )
+    progress = RunProgressReport(
+        run_id=run.id,
+        status="near_completion",
+        can_keep_running=True,
+        near_completion=True,
+    )
+    dirty_preflight = OrnithPreflightWarningReport(
+        run_id=run.id,
+        generated_at="2026-06-28T00:00:00+00:00",
+        total_count=1,
+        warning_count=1,
+        action_context_reorient_count=1,
+        latest_reorient_event_id=17,
+        latest_warning="Handoff action context is too thin for unattended Ornith resume.",
+        recommended_action="Refresh/checkpoint the handoff before claiming readiness.",
+        entries=[
+            OrnithPreflightWarningRecord(
+                event_id=17,
+                source="act_preflight_reorient",
+                item_id="handoff_action_context",
+                status="warn",
+                summary="Handoff action context is too thin for unattended Ornith resume.",
+                evidence=["restart_ledger=0"],
+                next_action="Refresh/checkpoint the handoff before claiming readiness.",
+            )
+        ],
+    )
+
+    report = build_readiness_completion(
+        run,
+        objective,
+        progress,
+        completion,
+        passed_rehearsal_ledger(),
+        passed_dispatch_restart_smoke_ledger(),
+        ornith_preflight_warnings=dirty_preflight,
+        require_rehearsal_ledger=True,
+        require_dispatch_restart_smoke_ledger=True,
+    )
+
+    check = next(check for check in report.checks if check.id == "ornith_preflight_warnings")
+    assert report.status == "blocked"
+    assert report.can_claim_milestone is False
+    assert report.ornith_preflight_warning_count == 1
+    assert report.ornith_preflight_reorient_count == 1
+    assert check.status == "block"
+    assert "restart_ledger=0" in check.evidence
+    assert check.next_action == "Refresh/checkpoint the handoff before claiming readiness."
+
+
+def test_readiness_completion_gate_blocks_unreviewed_self_scaffold(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Readiness dirty self scaffold",
+        str(tmp_path),
+        ["Harness readiness is verified"],
+    )
+    items = [
+        ObjectiveReadinessItem(
+            id=f"item-{index}",
+            requirement=f"Requirement {index}",
+            status="verified",
+        )
+        for index in range(10)
+    ]
+    objective = ObjectiveReadinessReport(
+        run_id=run.id,
+        status="ready",
+        verified_count=10,
+        partial_count=0,
+        missing_count=0,
+        failed_count=0,
+        items=items,
+    )
+    completion = CompletionAuditReport(
+        run_id=run.id,
+        status="ready",
+        can_finish=True,
+        acceptance_total=1,
+        acceptance_verified=1,
+    )
+    progress = RunProgressReport(
+        run_id=run.id,
+        status="near_completion",
+        can_keep_running=True,
+        near_completion=True,
+    )
+    dirty_scaffold = SelfScaffoldReport(
+        run_id=run.id,
+        generated_at="2026-06-28T00:00:00+00:00",
+        status="needs_review",
+        change_count=1,
+        guard_count=1,
+        latest_change="A model guard changed or constrained the selected action.",
+        recommended_action="Review pending self-scaffold changes before broad autonomy.",
+        changes=[
+            SelfScaffoldChangeRecord(
+                id="model_guard:current-task-mismatch",
+                kind="model_guard",
+                status="needs_review",
+                source="action_context",
+                summary="A model guard changed or constrained the selected action.",
+                evidence=["current_task_mismatch"],
+            )
+        ],
+    )
+
+    report = build_readiness_completion(
+        run,
+        objective,
+        progress,
+        completion,
+        passed_rehearsal_ledger(),
+        passed_dispatch_restart_smoke_ledger(),
+        ornith_preflight_warnings=OrnithPreflightWarningReport(run_id=run.id, generated_at="2026-06-28T00:00:00+00:00"),
+        self_scaffold=dirty_scaffold,
+        require_rehearsal_ledger=True,
+        require_dispatch_restart_smoke_ledger=True,
+    )
+
+    check = next(check for check in report.checks if check.id == "self_scaffold_review")
+    assert report.status == "blocked"
+    assert report.can_claim_milestone is False
+    assert report.self_scaffold_status == "needs_review"
+    assert report.self_scaffold_pending_review_count == 1
+    assert check.status == "block"
+    assert "pending=1" in check.evidence
+    assert check.next_action == "Review pending self-scaffold changes before broad autonomy."
+
+
+def test_make_handoff_feeds_preflight_warning_history_into_readiness_completion(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Live preflight readiness",
+        str(tmp_path),
+        ["Harness readiness is verified"],
+    )
+    event = engine.store.append_event(
+        run.id,
+        "act_preflight_reorient",
+        "Act preflight detected thin handoff action context.",
+        {
+            "handoff_action_context": {
+                "status": "warn",
+                "summary": "Handoff action context is too thin for unattended Ornith resume.",
+                "evidence": ["generated=True", "restart_ledger=0"],
+                "next_action": "Refresh/checkpoint the handoff before selecting the next tool action.",
+            }
+        },
+    )
+
+    handoff = engine._make_handoff(run, run.state)
+
+    check = next(check for check in handoff.readiness_completion.checks if check.id == "ornith_preflight_warnings")
+    assert handoff.ornith_preflight_warnings.action_context_reorient_count == 1
+    assert handoff.ornith_preflight_warnings.latest_reorient_event_id == event["id"]
+    assert handoff.readiness_completion.ornith_preflight_reorient_count == 1
+    assert check.status == "block"
+    assert "restart_ledger=0" in check.evidence
 
 
 def test_readiness_completion_gate_blocks_missing_rehearsal_ledger(tmp_path: Path) -> None:
@@ -583,6 +952,139 @@ def test_readiness_completion_gate_blocks_missing_rehearsal_ledger(tmp_path: Pat
     assert report.can_claim_milestone is False
     assert report.rehearsal_ledger_status == "never_run"
     assert any(check.id == "readiness_rehearsal" and check.status == "block" for check in report.checks)
+
+
+def test_readiness_completion_gate_blocks_rehearsal_without_self_scaffold_review(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Readiness stale smoke contract",
+        str(tmp_path),
+        ["Harness readiness is verified"],
+    )
+    items = [
+        ObjectiveReadinessItem(
+            id=f"item-{index}",
+            requirement=f"Requirement {index}",
+            status="verified",
+        )
+        for index in range(10)
+    ]
+    objective = ObjectiveReadinessReport(
+        run_id=run.id,
+        status="ready",
+        verified_count=10,
+        items=items,
+    )
+    completion = CompletionAuditReport(
+        run_id=run.id,
+        status="ready",
+        can_finish=True,
+        acceptance_total=1,
+        acceptance_verified=1,
+    )
+    progress = RunProgressReport(
+        run_id=run.id,
+        status="near_completion",
+        can_keep_running=True,
+        near_completion=True,
+    )
+    stale_ledger = passed_rehearsal_ledger()
+    stale_latest = stale_ledger.latest.model_copy(
+        update={
+            "self_scaffold_reviewed": False,
+            "self_scaffold_review_event_id": 0,
+            "self_scaffold_reviewed_change_count": 0,
+        }
+    )
+    stale_ledger.latest = stale_latest
+    stale_ledger.entries = [stale_latest]
+
+    report = build_readiness_completion(
+        run,
+        objective,
+        progress,
+        completion,
+        stale_ledger,
+        passed_dispatch_restart_smoke_ledger(),
+        require_rehearsal_ledger=True,
+        require_dispatch_restart_smoke_ledger=True,
+    )
+
+    check = next(check for check in report.checks if check.id == "readiness_rehearsal")
+    assert report.status == "blocked"
+    assert report.can_claim_milestone is False
+    assert check.status == "block"
+    assert "self_scaffold_reviewed=False" in check.evidence
+    assert "self_scaffold_reviewed_changes=0" in check.evidence
+    assert "self-scaffold review" in check.next_action
+
+
+def test_readiness_completion_gate_blocks_rehearsal_without_post_review_handoff_proof(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Readiness stale post-review handoff",
+        str(tmp_path),
+        ["Harness readiness is verified"],
+    )
+    items = [
+        ObjectiveReadinessItem(
+            id=f"item-{index}",
+            requirement=f"Requirement {index}",
+            status="verified",
+        )
+        for index in range(10)
+    ]
+    objective = ObjectiveReadinessReport(
+        run_id=run.id,
+        status="ready",
+        verified_count=10,
+        items=items,
+    )
+    completion = CompletionAuditReport(
+        run_id=run.id,
+        status="ready",
+        can_finish=True,
+        acceptance_total=1,
+        acceptance_verified=1,
+    )
+    progress = RunProgressReport(
+        run_id=run.id,
+        status="near_completion",
+        can_keep_running=True,
+        near_completion=True,
+    )
+    stale_ledger = passed_rehearsal_ledger()
+    stale_latest = stale_ledger.latest.model_copy(
+        update={
+            "post_review_handoff_goal_preserved": False,
+            "post_review_handoff_next_action_preserved": False,
+            "post_review_resume_prompt_goal_preserved": False,
+            "post_review_resume_prompt_next_action_preserved": False,
+        }
+    )
+    stale_ledger.latest = stale_latest
+    stale_ledger.entries = [stale_latest]
+
+    report = build_readiness_completion(
+        run,
+        objective,
+        progress,
+        completion,
+        stale_ledger,
+        passed_dispatch_restart_smoke_ledger(),
+        require_rehearsal_ledger=True,
+        require_dispatch_restart_smoke_ledger=True,
+    )
+
+    check = next(check for check in report.checks if check.id == "readiness_rehearsal")
+    assert report.status == "blocked"
+    assert report.can_claim_milestone is False
+    assert check.status == "block"
+    assert "post_review_handoff_goal=False" in check.evidence
+    assert "post_review_resume_next=False" in check.evidence
+    assert "post-review handoff" in check.next_action
 
 
 def test_readiness_completion_gate_blocks_missing_dispatch_restart_smoke_ledger(tmp_path: Path) -> None:
@@ -1059,6 +1561,235 @@ def test_choose_action_uses_available_acceptance_recommendation(tmp_path: Path) 
     asyncio.run(run())
 
 
+def test_choose_action_guards_harness_proof_recommendation_during_empty_edit_task(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Patch before verification", "Edit before proof", str(tmp_path), ["Tests pass"])
+        created.state.step_count = 1
+        created.state.task_graph = [
+            TaskNode(
+                id="task-edit",
+                title="Patch app.py safely",
+                status="pending",
+                kind="edit",
+            )
+        ]
+        created.state.current_task_id = "task-edit"
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "file_read"
+        assert action["args"] == {"path": "app.py"}
+        assert action["model_guard"] == "current_task_mismatch"
+        assert action["guarded_tool"] == "run_tests"
+        assert action["guard_reason"] == "edit_task_selected_proof_tool_without_evidence"
+        assert created.state.action_context.selected_tool == "file_read"
+        assert any("current_task_mismatch" in item and "selected" in item for item in created.state.action_context.model_guard_ledger)
+        assert created.state.model_interactions[-1].fallback_used
+        assert "mismatched current edit task" in created.state.model_interactions[-1].summary
+
+    asyncio.run(run())
+
+
+def test_choose_action_uses_promotion_repair_hint_before_broad_recommendation(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+        created = engine.store.create_run("Repair before verifying", "Promotion repair action", str(workspace), ["Tests pass"])
+        created.state.step_count = 1
+        latest = PromotionVerificationAttemptRecord(
+            event_id=31,
+            timestamp="2026-06-28T12:00:00+00:00",
+            command="python -m py_compile broken.py",
+            ok=False,
+            audit_status="needs_verification",
+            summary="Promotion verification failed.",
+            returncode=1,
+            failure_kind="syntax_error",
+            suspected_file="broken.py",
+            suspected_line=1,
+            repair_hint="Open `broken.py:1` and fix invalid syntax before rerunning promotion verification.",
+            evidence_excerpt="SyntaxError: invalid syntax",
+        )
+        created.state.promotion_verification = PromotionVerificationReport(
+            run_id=created.id,
+            generated_at="2026-06-28T12:00:00+00:00",
+            status="needs_retry",
+            attempt_count=1,
+            failed_count=1,
+            repeated_failure_count=1,
+            repair_hint_count=1,
+            latest_attempt=latest,
+            latest_failed_command=latest.command,
+            latest_failure_kind=latest.failure_kind,
+            latest_suspected_file=latest.suspected_file,
+            latest_repair_hint=latest.repair_hint,
+            next_command="python -m compileall .",
+            should_use_alternate=True,
+            recommended_action=latest.repair_hint,
+            attempts=[latest],
+        )
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-failed-proof",
+                name="run_tests",
+                args={"command": latest.command},
+                ok=False,
+                summary="Promotion proof failed.",
+            )
+        )
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "file_read"
+        assert action["args"]["path"] == "broken.py"
+        assert action["promotion_failure_kind"] == "syntax_error"
+        assert "broken.py:1" in action["thought_summary"]
+        assert created.state.action_context.selected_tool == "file_read"
+        assert "promotion_repair_hints=syntax_error:broken.py:1:rc=1" in created.state.action_context.compact_prompt
+        assert "promotion repair target" in created.state.model_interactions[-1].summary
+
+        class CapturingPatchModel:
+            def __init__(self) -> None:
+                self.user_prompt = ""
+
+            async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+                self.user_prompt = messages[-1]["content"]
+                return (
+                    '{"tool":"patch_propose","args":{"title":"Repair broken.py syntax",'
+                    '"summary":"Fix the promotion verification syntax failure in broken.py.",'
+                    '"files":["broken.py"],'
+                    '"diff":"--- a/broken.py\\n+++ b/broken.py\\n@@\\n-def broken(:\\n+def broken():\\n     pass\\n"},'
+                    '"thought_summary":"Propose the focused promotion repair patch."}'
+                )
+
+        patch_model = CapturingPatchModel()
+        engine.model = patch_model  # type: ignore[assignment]
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-read-repair-target",
+                name="file_read",
+                args={"path": "broken.py", "content": "def broken(:\n    pass\n"},
+                ok=True,
+                summary="Read broken.py.",
+            )
+        )
+        followup = await engine._choose_action(created, "tiny context")
+
+        assert followup["tool"] == "patch_propose"
+        assert followup["args"]["files"] == ["broken.py"]
+        assert "Promotion repair patch target" in patch_model.user_prompt
+        assert "target=broken.py:1" in patch_model.user_prompt
+        assert "file_excerpt:" in patch_model.user_prompt
+        assert "def broken(:" in patch_model.user_prompt
+        assert "do not rerun tests first" in patch_model.user_prompt
+
+    asyncio.run(run())
+
+
+def test_promotion_repair_loop_reads_proposes_applies_and_reruns_verification(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "broken.py").write_text("def broken():\n    pass\n", encoding="utf-8")
+        (workspace / "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+        created = engine.store.create_run(
+            "Repair promotion syntax failure",
+            "Promotion repair loop",
+            str(workspace),
+            ["Promotion verification passes before source promotion"],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        await engine.request_workspace_promotion(created.id)
+        prepared = engine.store.get_run(created.id)
+        prepared.state.repo_map.test_commands = ["python -m py_compile broken.py"]
+        engine.store.update_run(prepared.id, status="paused", state=prepared.state)
+
+        failed = await engine.run_promotion_audit_verification(created.id)
+
+        assert failed.state.promotion_verification.status == "needs_retry"
+        assert failed.state.promotion_repair.phase == "needs_file_read"
+        assert failed.state.promotion_repair.next_tool == "file_read"
+
+        read_action = await engine._choose_action(failed, "compact context")
+        read_result = await engine._execute_action(failed, read_action)
+        await engine._record_tool_result(created.id, read_result, action=read_action)
+        after_read = engine.store.get_run(created.id)
+
+        assert read_action["tool"] == "file_read"
+        assert read_result.ok
+        assert "def broken(:" in str(read_result.data.get("content") or "")
+        assert after_read.state.promotion_repair.phase == "needs_patch_proposal"
+        assert after_read.state.promotion_repair.next_tool == "patch_propose"
+
+        class PatchModel:
+            async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+                return (
+                    '{"tool":"patch_propose","args":{"title":"Repair broken.py syntax",'
+                    '"summary":"Fix the promotion verification syntax failure in broken.py.",'
+                    '"files":["broken.py"],'
+                    '"diff":"--- a/broken.py\\n+++ b/broken.py\\n@@ -1,2 +1,2 @@\\n-def broken(:\\n+def broken():\\n     pass\\n"},'
+                    '"thought_summary":"Propose the focused promotion repair patch."}'
+                )
+
+        engine.model = PatchModel()  # type: ignore[assignment]
+        patch_action = await engine._choose_action(after_read, "compact context")
+        patch_result = await engine._execute_action(after_read, patch_action)
+        await engine._record_tool_result(created.id, patch_result, action=patch_action)
+        after_proposal = engine.store.get_run(created.id)
+
+        assert patch_action["tool"] == "patch_propose"
+        assert patch_result.ok
+        assert after_proposal.state.patch_proposals
+        assert after_proposal.state.promotion_repair.phase == "patch_proposed"
+        assert after_proposal.state.promotion_repair.next_tool == "patch_apply"
+
+        proposal = after_proposal.state.patch_proposals[-1]
+        apply_args = {"patch_id": proposal.id, "title": proposal.title, "diff": proposal.diff}
+        apply_result = await ToolRunner(workspace, engine.config).execute("patch_apply", apply_args, approved=True)
+        await engine._record_tool_result(
+            created.id,
+            apply_result,
+            action={
+                "tool": "patch_apply",
+                "args": apply_args,
+                "thought_summary": "Apply approved promotion repair patch.",
+            },
+        )
+        after_apply = engine.store.get_run(created.id)
+
+        assert apply_result.ok
+        assert (workspace / "broken.py").read_text(encoding="utf-8") == "def broken():\n    pass\n"
+        assert after_apply.state.promotion_repair.phase == "ready_to_verify"
+        assert after_apply.state.promotion_repair.next_tool == "run_tests"
+        assert after_apply.state.promotion_repair.next_verification_command == "python -m compileall ."
+
+        verified = await engine.run_promotion_audit_verification(created.id)
+        events = [
+            event
+            for event in engine.store.list_events(created.id)
+            if event["kind"] == "promotion_audit_verification"
+        ]
+
+        assert verified.state.promotion_verification.status == "ready"
+        assert verified.state.promotion_audit.status == "ready"
+        assert verified.state.promotion_repair.phase == "none"
+        assert verified.state.promotion_repair.active is False
+        assert [event["data"]["tool_ok"] for event in events] == [False, True]
+
+    asyncio.run(run())
+
 def test_recommendation_trace_resolves_when_evidence_label_is_satisfied(tmp_path: Path) -> None:
     async def run() -> None:
         engine = make_engine(tmp_path)
@@ -1327,6 +2058,16 @@ def test_context_pressure_triggers_drift(tmp_path: Path) -> None:
     assert "Context budget pressure" in engine._detect_drift(run, run.state)
 
 
+def test_anchor_context_refresh_adopts_effective_context_target(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path, context_target_tokens=12000)
+    run = engine.store.create_run("Resume old config run", "Old budget", str(tmp_path), [])
+    run.state.context_budget = ContextBudget(target_tokens=24000, estimated_tokens=0, pressure="low")
+
+    engine._reload_anchor_context(run, run.state)
+
+    assert run.state.context_budget.target_tokens == engine.context_compiler.target_tokens
+
+
 def test_run_health_flags_recovery_and_context_pressure(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     run = engine.store.create_run("Recover run", "Health", str(tmp_path), [])
@@ -1349,6 +2090,133 @@ def test_run_health_flags_recovery_and_context_pressure(tmp_path: Path) -> None:
     assert {"context_pressure_high", "repeated_failures", "active_recovery"} <= {signal.id for signal in health.signals}
 
 
+def test_verify_prefers_py_compile_for_touched_python_source(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        created = engine.store.create_run("Verify touched Python", "Verify py", str(tmp_path), [])
+        created.state.files_touched = ["app.py"]
+
+        result = await engine._verify(created, created.state)
+
+        assert result.ok
+        assert result.kind == "shell"
+        assert result.data["command"] == "python -m py_compile app.py"
+
+    asyncio.run(run())
+
+
+def test_verify_command_prefers_typecheck_for_touched_frontend_source(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"test":"vitest","build":"vite build","lint":"eslint .","typecheck":"tsc --noEmit"}}',
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "App.tsx").write_text("export function App() { return null }\n", encoding="utf-8")
+    created = engine.store.create_run("Verify touched TSX", "Verify tsx", str(tmp_path), [])
+
+    command = engine._verification_command_for_touched_sources(created, created.state, ["src/App.tsx"])
+
+    assert command == "npm run typecheck"
+    assert created.state.repo_map.generated_at
+def test_verify_milestone_attaches_compact_task_proof_to_handoff(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        created = engine.store.create_run("Verify task proof", "Task proof", str(tmp_path), [])
+        created.state.milestone = "verify"
+        created.state.files_touched = ["app.py"]
+        created.state.task_graph = [
+            TaskNode(id="task-1", title="Patch app.py safely", kind="edit", status="in_progress")
+        ]
+        created.state.current_task_id = "task-1"
+        engine.store.update_run(created.id, status="queued", state=created.state)
+
+        await engine._run_one_milestone(created.id)
+        updated = engine.store.get_run(created.id)
+        task = updated.state.task_graph[0]
+
+        assert updated.state.milestone == "checkpoint"
+        assert task.status == "completed"
+        assert any(
+            "verification:ok:shell" in item and "cmd=python -m py_compile app.py" in item
+            for item in task.evidence
+        )
+        assert task.notes == "Latest verification ok: python -m py_compile app.py"
+        assert "verification:ok:shell" in updated.state.handoff_summary.model_dump_json()
+
+    asyncio.run(run())
+
+def test_decide_advances_task_and_packs_task_transition_ledger(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Verify task transitions", "Task transition", str(tmp_path), ["Tests pass"])
+        created.state.milestone = "decide"
+        created.state.next_step = "Verify task transitions against Tests pass."
+        created.state.task_graph = [
+            TaskNode(
+                id="task-1",
+                title="Patch app.py safely",
+                kind="edit",
+                status="completed",
+                evidence=["verification:ok:shell | cmd=python -m py_compile app.py"],
+                notes="Latest verification ok: python -m py_compile app.py",
+            ),
+            TaskNode(id="task-2", title="Run focused acceptance verification", kind="verify", status="pending"),
+        ]
+        created.state.current_task_id = "task-1"
+        engine.store.update_run(created.id, status="queued", state=created.state)
+
+        await engine._run_one_milestone(created.id)
+        updated = engine.store.get_run(created.id)
+        ledger = updated.state.handoff_summary.action_context.task_transition_ledger
+
+        assert updated.state.milestone == "act"
+        assert updated.state.current_task_id == "task-2"
+        assert updated.state.handoff_summary.current_task_id == "task-2"
+        assert updated.state.handoff_summary.action_context.current_task_id == "task-2"
+        assert any("completed:task-1:Patch app.py safely" in item and "verification:ok:shell" in item for item in ledger)
+        assert any("current:pending:task-2:Run focused acceptance verification" in item for item in ledger)
+        assert "task_transitions=completed:task-1:Patch app.py safely" in updated.state.handoff_summary.action_context.compact_prompt
+
+    asyncio.run(run())
+
+
+def test_verify_milestone_attaches_critic_risk_to_task_handoff(tmp_path: Path) -> None:
+    class CriticRiskModel:
+        async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+            prompt = messages[-1]["content"]
+            assert "Find concrete risks only" in prompt
+            return '{"risk":"Need browser screenshot proof before claiming UI complete."}'
+
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        engine.model = CriticRiskModel()  # type: ignore[assignment]
+        (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        created = engine.store.create_run("Verify critic proof", "Critic proof", str(tmp_path), [])
+        created.state.milestone = "verify"
+        created.state.files_touched = ["app.py"]
+        created.state.task_graph = [
+            TaskNode(id="task-1", title="Patch app.py safely", kind="edit", status="in_progress")
+        ]
+        created.state.current_task_id = "task-1"
+        engine.store.update_run(created.id, status="queued", state=created.state)
+
+        await engine._run_one_milestone(created.id)
+        updated = engine.store.get_run(created.id)
+        task = updated.state.task_graph[0]
+
+        assert updated.state.milestone == "checkpoint"
+        assert "Need browser screenshot proof" in updated.state.risks[-1]
+        assert any("critic:risk | Need browser screenshot proof" in item for item in task.evidence)
+        assert task.notes == "Latest critic risk: Need browser screenshot proof before claiming UI complete."
+        assert "critic:risk" in updated.state.handoff_summary.model_dump_json()
+        assert updated.state.model_interactions[-1].kind == "critic"
+        assert updated.state.model_interactions[-1].ok
+
+    asyncio.run(run())
 def test_run_health_recommends_verify_for_stale_evidence(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     run = engine.store.create_run("Refresh stale proof", "Health stale", str(tmp_path), ["Tests pass"])
@@ -1537,6 +2405,87 @@ def test_run_health_recovers_on_repeated_unresolved_readiness_proof(tmp_path: Pa
     assert any(signal.id == "readiness_proof_unresolved_loop" for signal in health.signals)
     assert simulation.policy_action == "recover"
     assert not simulation.safe_to_resume
+
+
+def test_run_health_ignores_unresolved_readiness_after_satisfied_label(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run("Trace satisfied readiness", "Health readiness satisfied", str(tmp_path), ["Tests pass"])
+    run.state.acceptance_evidence[0].status = "verified"
+    run.state.acceptance_evidence[0].matched_labels = ["verification"]
+    run.state.acceptance_recommendation_traces = [
+        AcceptanceRecommendationTrace(
+            id="rec-trace-1",
+            recommendation_id="criterion-1-verification",
+            criterion_id="criterion-1",
+            criterion="Tests pass",
+            label="verification",
+            recommended_tool="run_tests",
+            selected_tool="run_tests",
+            source="harness",
+            status="executed",
+            result_ok=True,
+            result_summary="Command ran but criterion stayed open.",
+            evidence_status="open",
+        ),
+        AcceptanceRecommendationTrace(
+            id="rec-trace-2",
+            recommendation_id="criterion-1-verification",
+            criterion_id="criterion-1",
+            criterion="Tests pass",
+            label="verification",
+            recommended_tool="run_tests",
+            selected_tool="run_tests",
+            source="harness",
+            status="executed",
+            result_ok=True,
+            result_summary="Command ran again but criterion stayed open.",
+            evidence_status="open",
+        ),
+        AcceptanceRecommendationTrace(
+            id="rec-trace-3",
+            recommendation_id="criterion-1-verification",
+            criterion_id="criterion-1",
+            criterion="Tests pass",
+            label="verification",
+            recommended_tool="run_tests",
+            selected_tool="run_tests",
+            source="harness",
+            status="satisfied",
+            result_ok=True,
+            result_summary="Tests pass verified.",
+            evidence_status="verified",
+        ),
+    ]
+    run = engine.store.update_run(run.id, state=run.state)
+    for trace in run.state.acceptance_recommendation_traces[:2]:
+        engine.store.append_event(
+            run.id,
+            "action_readiness_tool",
+            "needs_proof: Run tests.",
+            {
+                "action_readiness": {
+                    "run_id": run.id,
+                    "status": "needs_proof",
+                    "ready_to_act": True,
+                    "suggested_tool": "run_tests",
+                    "suggested_label": "verification",
+                    "recommended_action": "Run the smallest relevant verification command.",
+                },
+                "selected_action": {
+                    "tool": "run_tests",
+                    "recommendation_trace_id": trace.id,
+                    "recommendation_id": trace.recommendation_id,
+                    "recommendation_label": trace.label,
+                    "recommendation_criterion_id": trace.criterion_id,
+                },
+            },
+        )
+
+    run = engine.store.get_run(run.id)
+    health = engine._build_run_health(run, run.state)
+
+    assert health.recommended_action != "recover"
+    assert not any(signal.id == "readiness_proof_unresolved_loop" for signal in health.signals)
 
 
 def test_run_health_recovers_on_repeated_objective_readiness_proof_failures(tmp_path: Path) -> None:
@@ -1812,6 +2761,120 @@ def test_resume_refreshes_stale_report_integrity_before_preflight(tmp_path: Path
     asyncio.run(run())
 
 
+def test_resume_refreshes_stale_approval_review_handoff_before_preflight(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Refresh approval review handoff", "Approval review preflight", str(tmp_path), [])
+        approval = engine.store.create_approval(
+            created.id,
+            "shell",
+            {"tool_name": "shell", "args": {"command": "python -m pytest"}},
+            "Approve shell verification.",
+        )
+        first_review = engine.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed approval.",
+            {"operator_action": {"approval_id": approval["id"]}},
+        )
+        created.state.handoff_summary = engine._make_handoff(created, created.state)
+        engine.store.update_run(created.id, status="paused", state=created.state)
+        second_review = engine.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed approval again.",
+            {"operator_action": {"approval_id": approval["id"]}},
+        )
+
+        stale = engine.get_report_integrity(created.id)
+        stale_checks = {check["section"]: check for check in stale["checks"]}
+        assert stale["status"] == "needs_refresh"
+        assert stale_checks["handoff.approval_reviews.review_count"]["expected"] == f"{approval['id']}:2"
+        assert stale_checks["handoff.approval_reviews.review_count"]["actual"] == f"{approval['id']}:1"
+        assert stale_checks["handoff.approvals"]["expected"] == f"shell:pending:reviewed:x2:event#{second_review['id']}"
+        assert stale_checks["handoff.approvals"]["actual"] == f"shell:pending:reviewed:x1:event#{first_review['id']}"
+
+        updated = await engine.resume_run(created.id)
+        engine._cancel_task(created.id)
+        refreshed = engine.store.get_run(created.id)
+        events = engine.store.list_events(created.id)
+        refreshed_review = refreshed.state.handoff_summary.approval_reviews[0]
+
+        assert updated.status == "paused"
+        assert refreshed_review.review_count == 2
+        assert refreshed_review.latest_review_event_id == second_review["id"]
+        assert refreshed.state.handoff_summary.approvals == [
+            f"shell:pending:reviewed:x2:event#{second_review['id']}"
+        ]
+        assert refreshed.state.handoff_summary.report_integrity.status == "ok"
+        refresh_event = next(event for event in events if event["kind"] == "report_integrity_refresh")
+        refresh_reasons = refresh_event["data"]["report_integrity_refresh_reasons"]
+        assert refresh_event["data"]["refresh_reason_count"] == len(refresh_reasons)
+        assert any(
+            "handoff.approval_reviews.review_count" in reason and f"{approval['id']}:2" in reason
+            for reason in refresh_reasons
+        )
+        preflight = next(event for event in events if event["kind"] == "resume_preflight_blocked")
+        assert preflight["data"]["report_integrity_refreshed"] is True
+        assert preflight["data"]["report_integrity_refresh_reasons"] == refresh_reasons
+
+    asyncio.run(run())
+
+
+def test_restart_resume_refresh_breadcrumb_reaches_obsidian_checkpoint(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run(
+            "Restart with refresh breadcrumb",
+            "Refresh breadcrumb restart",
+            str(tmp_path),
+            [],
+        )
+        approval = engine_one.store.create_approval(
+            created.id,
+            "shell",
+            {"tool_name": "shell", "args": {"command": "python -m pytest"}},
+            "Approve shell verification.",
+        )
+        first_review = engine_one.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed approval before checkpoint.",
+            {"operator_action": {"approval_id": approval["id"]}},
+        )
+        created.state.handoff_summary = engine_one._make_handoff(created, created.state)
+        engine_one.store.update_run(created.id, status="paused", state=created.state)
+        engine_one.memory.append_run_started(created)
+        second_review = engine_one.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed approval after backend stopped.",
+            {"operator_action": {"approval_id": approval["id"]}},
+        )
+
+        engine_two = make_engine(tmp_path)
+        updated = await engine_two.resume_run(created.id)
+        refreshed = engine_two.store.get_run(created.id)
+        refresh = refreshed.state.report_integrity_refreshes[0]
+        await engine_two.pause_run(created.id)
+        note = engine_two.memory.read_run_note(created.id)
+
+        assert updated.status == "paused"
+        assert refresh.previous_report_status == "needs_refresh"
+        assert refresh.report_status == "ok"
+        assert refresh.preflight_event_kind == "resume_preflight_blocked"
+        assert any(
+            "handoff.approval_reviews.review_count" in reason and f"{approval['id']}:2" in reason
+            for reason in refresh.reasons
+        )
+        assert f"shell:pending:reviewed:x2:event#{second_review['id']}" in refreshed.state.handoff_summary.approvals
+        assert f"shell:pending:reviewed:x1:event#{first_review['id']}" not in refreshed.state.handoff_summary.approvals
+        assert f"Report integrity refresh: #{refresh.event_id} needs_refresh->ok reasons={refresh.reason_count}" in note
+        assert "handoff.approval_reviews.review_count" in note
+        assert f"preflight=#{refresh.preflight_event_id}:resume_preflight_blocked" in note
+
+    asyncio.run(run())
+
 def test_resume_run_blocks_unsafe_preflight(tmp_path: Path) -> None:
     async def run() -> None:
         engine = make_engine(tmp_path)
@@ -1877,6 +2940,51 @@ def test_act_preflight_reorients_when_resume_policy_diverges(tmp_path: Path) -> 
     asyncio.run(run())
 
 
+def test_act_preflight_reorients_when_handoff_action_context_is_thin(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Verify acceptance", "Act thin handoff context", str(tmp_path), ["Tests pass"])
+        created.state.milestone = "act"
+        engine._ensure_acceptance_evidence(created.state)
+        created = engine.store.update_run(created.id, status="queued", state=created.state)
+        accepted_simulation = engine._build_policy_simulation(created, created.state)
+        decision = engine.store.append_event(
+            created.id,
+            "resume_preflight",
+            "Resume preflight accepted for manual.",
+            {
+                "source": "manual",
+                "accepted": True,
+                "reason": "Accepted current policy snapshot with stale handoff action context.",
+                "policy_simulation": accepted_simulation.model_dump(),
+            },
+        )
+
+        created.state.handoff_summary.resume_decisions = engine._build_resume_decision_report(created, created.state)
+        stable_diff = ResumeHandoffDiffReport(
+            run_id=created.id,
+            status="stable",
+            ready_to_continue=True,
+            latest_accepted_event_id=decision["id"],
+            summary="Stable accepted preflight baseline.",
+        )
+        created.state.resume_handoff_diff = stable_diff
+        created.state.handoff_summary.resume_handoff_diff = stable_diff
+        created = engine.store.update_run(created.id, status="queued", state=created.state)
+
+        assert await engine._apply_act_preflight_guard(created, created.state) is True
+        updated = engine.store.get_run(created.id)
+        events = engine.store.list_events(created.id)
+        preflight = next(event for event in events if event["kind"] == "act_preflight_reorient")
+
+        assert updated.state.milestone == "orient"
+        assert updated.state.act_preflight_checked_decision_id == decision["id"]
+        assert not updated.state.tool_calls
+        assert "thin handoff action context" in updated.state.latest_summary
+        assert preflight["data"]["handoff_action_context"]["status"] == "warn"
+        assert "restart_ledger" in preflight["data"]["handoff_action_context"]["summary"]
+
+    asyncio.run(run())
 def test_action_readiness_recommends_acceptance_proof(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     created = engine.store.create_run("Verify acceptance", "Readiness proof", str(tmp_path), ["Tests pass"])
@@ -1891,6 +2999,107 @@ def test_action_readiness_recommends_acceptance_proof(tmp_path: Path) -> None:
     assert report.suggested_tool == "run_tests"
     assert report.suggested_label == "verification"
     assert report.issues[0].id == "acceptance_proof_recommended"
+
+
+def test_action_readiness_does_not_verify_artifact_before_creation(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    created = engine.store.create_run(
+        "Create a PowerPoint deck named AgentOrnith_use_cases.pptx.",
+        "Artifact first",
+        str(tmp_path),
+        [
+            "A PowerPoint .pptx file named AgentOrnith_use_cases.pptx exists in the run workspace root.",
+            "Artifact verification confirms the .pptx is a valid PowerPoint zip with at least six slide XML files.",
+        ],
+    )
+    created.state.milestone = "act"
+    engine._ensure_acceptance_evidence(created.state)
+    created = engine.store.update_run(created.id, status="queued", state=created.state)
+
+    report = engine._build_action_readiness(created, created.state)
+
+    assert report.status == "ready"
+    assert report.ready_to_act
+    assert report.issues[0].id == "artifact_missing_before_verification"
+    assert "before running artifact verification" in report.recommended_action
+
+
+def test_harness_smoke_gates_ignore_agentorinth_content_artifacts(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    created = engine.store.create_run(
+        "Create AgentOrnith_use_cases.pptx explaining where the AgentOrnith harness performs better.",
+        "Content deck",
+        str(tmp_path),
+        [
+            "AgentOrnith_use_cases.pptx exists in the run workspace root.",
+            "Each use-case slide compares AgentOrnith harness vs simple command-line Ornith.",
+        ],
+    )
+
+    readiness = engine._build_readiness_completion(created, created.state)
+    health = engine._build_run_health(created, created.state)
+    signal_ids = {signal.id for signal in health.signals}
+
+    assert engine._is_harness_improvement_goal(created, created.state) is False
+    assert readiness.status == "not_applicable"
+    assert "operator_dispatch_restart_smoke_attention" not in signal_ids
+    assert "readiness_smoke_attention" not in signal_ids
+    assert not any("operator-dispatch restart smoke" in action for action in health.next_actions)
+
+
+def test_harness_smoke_gates_apply_to_agentorinth_code_work(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    created = engine.store.create_run(
+        "Improve AgentOrinth backend approval policy and tool routing for long coding tasks.",
+        "Harness code work",
+        str(tmp_path),
+        ["Approval policy supports long coding tasks."],
+    )
+
+    assert engine._is_harness_improvement_goal(created, created.state) is True
+
+
+def test_choose_action_scaffolds_missing_pptx_artifact(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Create AgentOrnith_use_cases.pptx explaining five AgentOrnith use cases.",
+            "PPT artifact",
+            str(tmp_path),
+            ["AgentOrnith_use_cases.pptx exists in the run workspace root."],
+        )
+        created.state.step_count = 1
+        created = engine.store.update_run(created.id, status="queued", state=created.state)
+
+        action = await engine._choose_action(created, "compact context")
+
+        assert action["tool"] == "file_write"
+        assert action["args"]["path"] == "_agentornith_create_pptx.py"
+        assert "AgentOrnith_use_cases.pptx" in action["args"]["content"]
+
+    asyncio.run(run())
+
+
+def test_choose_action_runs_existing_pptx_scaffold(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Create AgentOrnith_use_cases.pptx explaining five AgentOrnith use cases.",
+            "PPT artifact",
+            str(tmp_path),
+            ["AgentOrnith_use_cases.pptx exists in the run workspace root."],
+        )
+        Path(created.workspace_path, "_agentornith_create_pptx.py").write_text("print('ok')", encoding="utf-8")
+        created.state.step_count = 1
+        created = engine.store.update_run(created.id, status="queued", state=created.state)
+
+        action = await engine._choose_action(created, "compact context")
+
+        assert action["tool"] == "shell"
+        assert "_agentornith_create_pptx.py" in action["args"]["command"]
+
+    asyncio.run(run())
+
 
 def test_action_readiness_prioritizes_missing_browser_source_evidence(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
@@ -1913,6 +3122,110 @@ def test_action_readiness_prioritizes_missing_browser_source_evidence(tmp_path: 
     assert report.issues[0].id == "source_evidence_missing"
     assert created.state.source_evidence.missing_labels == ["browser"]
 
+
+
+def test_choose_action_uses_readiness_source_ref_preview_recommendation_before_model(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Verify source-ref evidence gate",
+            "Source-ref preview action",
+            str(tmp_path),
+            ["Readiness proof has web and browser source refs."],
+        )
+        created.state.step_count = 1
+        created.state.milestone = "act"
+        engine._ensure_acceptance_evidence(created.state)
+        created.state.acceptance_evidence[0].status = "verified"
+        created.state.acceptance_evidence[0].matched_labels = ["browser", "web"]
+        created.state.acceptance_recommendations = []
+        created.state.readiness_source_ref_preview = ReadinessSourceRefPreviewReport(
+            run_id=created.id,
+            generated_at="2026-06-29T10:00:00+00:00",
+            status="missing_source_evidence",
+            summary="Readiness source-ref preview is missing browser evidence.",
+            recommended_action="Capture browser evidence, then refresh readiness source refs.",
+            source_visible_labels=["browser", "web"],
+            source_evidence_labels=["web"],
+            proof_ref_labels=["web"],
+            missing_source_evidence_labels=["browser"],
+            missing_proof_ref_labels=["browser"],
+        )
+        report = engine._build_action_readiness(created, created.state)
+
+        assert report.suggested_tool == "browser_screenshot"
+        assert report.suggested_label == "browser"
+        assert report.issues[0].id == "readiness_source_ref_evidence_missing"
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "browser_screenshot"
+        assert action["recommendation_id"] == "readiness-source-ref-browser"
+        assert action["recommendation_label"] == "browser"
+        assert created.state.action_context.selected_tool == "browser_screenshot"
+        assert created.state.action_context.selected_reason == "Readiness source-ref preview is missing compact browser source evidence."
+        assert created.state.action_context.readiness_source_ref_status == "missing_source_evidence"
+        assert created.state.action_context.readiness_source_ref_missing_evidence_labels == ["browser"]
+        assert "source_refs status=missing_source_evidence" in created.state.action_context.compact_prompt
+        assert "then refresh readiness source refs" in created.state.action_context.compact_prompt
+        assert created.state.acceptance_recommendation_traces[0].recommendation_id == "readiness-source-ref-browser"
+        assert "acceptance recommendation" in created.state.model_interactions[-1].summary
+
+    asyncio.run(run())
+def test_stale_readiness_source_refs_pause_ornith_until_refresh(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Verify source-ref refresh gate",
+            "Stale proof refs",
+            str(tmp_path),
+            ["Readiness proof has web and browser source refs."],
+        )
+        created.state.step_count = 1
+        created.state.milestone = "act"
+        engine._ensure_acceptance_evidence(created.state)
+        created.state.acceptance_evidence[0].status = "verified"
+        created.state.acceptance_evidence[0].matched_labels = ["browser", "web"]
+        created.state.acceptance_recommendations = []
+        created.state.readiness_source_ref_preview = ReadinessSourceRefPreviewReport(
+            run_id=created.id,
+            generated_at="2026-06-29T10:00:00+00:00",
+            status="missing_proof_refs",
+            summary="Readiness source evidence exists, but browser proof refs are stale.",
+            recommended_action="Dispatch readiness source-ref refresh before broad coding.",
+            source_visible_labels=["browser", "web"],
+            source_evidence_labels=["browser", "web"],
+            proof_ref_labels=["web"],
+            missing_source_evidence_labels=[],
+            missing_proof_ref_labels=["browser"],
+        )
+
+        report = engine._build_action_readiness(created, created.state)
+
+        assert report.status == "blocked"
+        assert report.ready_to_act is False
+        assert report.suggested_tool == "ask_user"
+        assert report.suggested_label == "readiness_source_refs"
+        assert report.issues[0].id == "readiness_source_ref_refresh_required"
+        assert "POST /api/runs/" in report.recommended_action
+        assert "/readiness-source-refs/refresh" in report.recommended_action
+        assert "missing_proof=browser" in report.issues[0].evidence
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "ask_user"
+        assert action["model_guard"] == "readiness_source_ref_refresh_required"
+        assert action["guarded_tool"] == "model_action_selection"
+        assert action["endpoint"] == f"/api/runs/{created.id}/readiness-source-refs/refresh"
+        assert action["method"] == "POST"
+        assert action["missing_proof_labels"] == ["browser"]
+        assert created.state.action_context.selected_tool == "ask_user"
+        assert created.state.action_context.readiness_source_ref_status == "missing_proof_refs"
+        assert created.state.action_context.readiness_source_ref_missing_proof_labels == ["browser"]
+        assert "source_refs status=missing_proof_refs" in created.state.action_context.compact_prompt
+        assert "Dispatch readiness source-ref refresh" in created.state.action_context.compact_prompt
+        assert "paused Ornith action selection" in created.state.model_interactions[-1].summary
+
+    asyncio.run(run())
 
 def test_choose_action_uses_ranked_source_evidence_recommendation_before_model(tmp_path: Path) -> None:
     async def run() -> None:
@@ -2118,7 +3431,7 @@ def test_goal_review_asks_model_then_waits_for_confirmation(tmp_path: Path) -> N
     class GoalReviewModel:
         async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
             return (
-                '{"should_update": true, "proposed_goal": "Sharper active goal", '
+                '{"should_update": true, "proposed_goal": "Improve original project objective with sharper implementation constraints", '
                 '"reason": "Long run learned more context."}'
             )
 
@@ -2132,16 +3445,47 @@ def test_goal_review_asks_model_then_waits_for_confirmation(tmp_path: Path) -> N
 
         assert updated.status == "waiting_goal_confirmation"
         assert updated.state.goal == "Original goal"
-        assert updated.state.proposed_goal == "Sharper active goal"
+        assert updated.state.proposed_goal == "Improve original project objective with sharper implementation constraints"
         assert updated.state.model_interactions[-1].kind == "goal"
         assert approvals[0]["action_kind"] == "goal_update"
-        assert approvals[0]["payload"]["proposed_goal"] == "Sharper active goal"
+        assert approvals[0]["payload"]["proposed_goal"] == "Improve original project objective with sharper implementation constraints"
         assert updated.state.goal_evolution.pending_count == 1
         assert updated.state.goal_evolution.latest_decision.source == "manual_review"
-        assert updated.state.goal_evolution.latest_decision.proposed_goal == "Sharper active goal"
+        assert updated.state.goal_evolution.latest_decision.proposed_goal == "Improve original project objective with sharper implementation constraints"
 
     asyncio.run(run())
 
+
+def test_goal_review_rejects_tactical_model_rewrite(tmp_path: Path) -> None:
+    class TacticalGoalReviewModel:
+        async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+            prompt = messages[-1]["content"]
+            assert "Preserve the original objective anchors" in prompt
+            return '{"should_update": true, "proposed_goal": "Fix tests", "reason": "Tests are failing now."}'
+
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        engine.model = TacticalGoalReviewModel()  # type: ignore[assignment]
+        created = engine.store.create_run(
+            "Improve AgentOrinth harness for long Ornith coding tasks",
+            "Goal tactical guard",
+            str(tmp_path),
+            [],
+        )
+
+        updated = await engine.review_goal(created.id)
+        approvals = engine.store.list_approvals(created.id)
+
+        assert updated.status == "queued"
+        assert updated.state.goal == "Improve AgentOrinth harness for long Ornith coding tasks"
+        assert updated.state.proposed_goal is None
+        assert approvals == []
+        assert updated.state.goal_evolution.unchanged_count == 1
+        assert updated.state.goal_evolution.latest_decision.status == "unchanged"
+        assert "Rejected unsafe goal proposal" in updated.state.goal_evolution.latest_decision.reason
+        assert "too short" in updated.state.goal_evolution.latest_decision.reason
+
+    asyncio.run(run())
 
 def test_goal_review_records_unchanged_decision(tmp_path: Path) -> None:
     async def run() -> None:
@@ -2207,6 +3551,37 @@ def test_failure_records_are_classified(tmp_path: Path) -> None:
     assert updated.state.failure_records[0].kind == "timeout"
     assert "Reduce command scope" in updated.state.failure_records[0].recovery_hint
 
+
+def test_failure_records_keep_compact_command_context(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run("Classify syntax failures", "Failure context", str(tmp_path), [])
+    result = ToolResult(
+        False,
+        "shell",
+        "exit 1: python broken.py",
+        {
+            "command": "python broken.py",
+            "returncode": 1,
+            "stderr": "File broken.py, line 3\nSyntaxError: invalid syntax\napi_key=super-secret",
+        },
+    )
+
+    async def record() -> None:
+        await engine._record_tool_result(run.id, result)
+
+    asyncio.run(record())
+    updated = engine.store.get_run(run.id)
+    failure = updated.state.failure_records[0]
+
+    assert failure.kind == "syntax_error"
+    assert failure.command == "python broken.py"
+    assert failure.returncode == 1
+    assert "SyntaxError" in failure.evidence_excerpt
+    assert "super-secret" not in failure.evidence_excerpt
+    assert "[REDACTED]" in failure.evidence_excerpt
+    assert "patch the smallest affected file" in failure.recovery_hint
+    assert any("cmd=python broken.py" in item and "rc=1" in item for item in updated.state.action_context.failure_ledger)
+
 def test_failed_action_queues_post_action_retry(tmp_path: Path) -> None:
     async def run() -> None:
         engine = make_engine(tmp_path)
@@ -2228,6 +3603,69 @@ def test_failed_action_queues_post_action_retry(tmp_path: Path) -> None:
         assert decision.selected_tool == "shell"
         assert decision.command_hint == "python -m compileall backend\\app"
         assert updated.state.active_tool == ""
+
+    asyncio.run(run())
+
+
+def test_missing_artifact_verification_does_not_queue_compile_retry(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Create AgentOrnith_use_cases.pptx.",
+            "PPT artifact",
+            str(tmp_path),
+            ["AgentOrnith_use_cases.pptx exists in the run workspace root."],
+        )
+        command = (
+            "python -c \"from pathlib import Path; "
+            "files=sorted(Path('.').rglob('*.pptx')); assert files, 'no pptx files found'\""
+        )
+
+        await engine._record_tool_result(
+            created.id,
+            ToolResult(False, "shell", "exit 1: AssertionError: no pptx files found", {"command": command}),
+            action={"tool": "shell", "args": {"command": command}},
+        )
+        updated = engine.store.get_run(created.id)
+
+        assert updated.state.post_action_retries.decision_count == 0
+
+    asyncio.run(run())
+
+
+def test_legacy_missing_artifact_retry_is_ignored(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Create AgentOrnith_use_cases.pptx.",
+            "PPT artifact",
+            str(tmp_path),
+            ["AgentOrnith_use_cases.pptx exists in the run workspace root."],
+        )
+        created.state.step_count = 1
+        created.state.post_action_retries.decisions.append(
+            PostActionRetryDecisionRecord(
+                id="post-retry-legacy",
+                status="pending",
+                trigger_tool="shell",
+                trigger_summary=(
+                    "exit 1: python -c \"files=sorted(Path('.').rglob('*.pptx')); "
+                    "assert files, 'no pptx files found'\""
+                ),
+                selected_tool="shell",
+                selected_action="Run compile diagnostic.",
+                command_hint="python -m compileall backend\\app",
+                reason="Legacy retry created before artifact-missing handling.",
+            )
+        )
+        created = engine.store.update_run(created.id, status="queued", state=created.state)
+
+        action = await engine._choose_action(created, "compact context")
+
+        assert not (
+            action["tool"] == "shell"
+            and action.get("args", {}).get("command") == "python -m compileall backend\\app"
+        )
 
     asyncio.run(run())
 
@@ -2274,13 +3712,410 @@ def test_post_action_retry_resolves_from_retry_result(tmp_path: Path) -> None:
             ToolResult(True, "shell", "Compile check passed.", {"command": action["args"]["command"]}),
             action=action,
         )
-        resolved = engine.store.get_run(created.id).state.post_action_retries
+        final = engine.store.get_run(created.id)
+        resolved = final.state.post_action_retries
 
         assert resolved.resolved_count == 1
         assert resolved.pending_count == 0
         assert resolved.latest_decision.status == "resolved"
         assert resolved.latest_decision.resolution_tool == "shell"
         assert resolved.latest_decision.resolution_ok is True
+        assert any(
+            "retry:run_tests->shell:test_failure" in item and "Compile check passed." in item
+            for item in final.state.action_context.resolved_failure_ledger
+        )
+        assert final.state.handoff_summary.action_context.resolved_failure_ledger == final.state.action_context.resolved_failure_ledger
+        assert "resolved_failure_ledger=retry:run_tests->shell:test_failure" in final.state.action_context.compact_prompt
+
+    asyncio.run(run())
+
+
+
+
+
+def test_desktop_effect_proof_preview_tracks_latest_action_and_snapshot(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    created = engine.store.create_run("Use supervised desktop control", "Desktop proof preview", str(tmp_path), [])
+
+    empty = engine.get_desktop_effect_proof_preview(created.id)
+    assert empty["status"] == "not_required"
+    assert empty["requires_attention"] is False
+
+    created.state.tool_calls.append(
+        ToolCallRecord(
+            id="desktop-click-1",
+            name="desktop_click",
+            ok=True,
+            summary="Clicked the visible Save button.",
+            created_at="2026-06-29T10:00:00+00:00",
+        )
+    )
+    engine.store.update_run(created.id, state=created.state)
+
+    needs = engine.get_desktop_effect_proof_preview(created.id)
+    assert needs["status"] == "needs_proof"
+    assert needs["requires_attention"] is True
+    assert needs["latest_action_id"] == "desktop-click-1"
+    assert needs["latest_action_tool"] == "desktop_click"
+    assert "Clicked the visible Save button" in needs["latest_action_summary"]
+    assert needs["proof_tool"] == ""
+    assert any("action=desktop_click" in item for item in needs["ledger"])
+
+    updated = engine.store.get_run(created.id)
+    updated.state.tool_calls.append(
+        ToolCallRecord(
+            id="desktop-shot-1",
+            name="desktop_screenshot",
+            ok=True,
+            summary="Captured the post-click desktop state.",
+            created_at="2026-06-29T10:01:00+00:00",
+        )
+    )
+    updated.state.desktop_snapshots.append(
+        DesktopSnapshot(
+            id="desktop-proof",
+            timestamp="2026-06-29T10:01:00+00:00",
+            title="Desktop screenshot",
+            path=str(tmp_path / "desktop-proof.png"),
+            summary="Captured the post-click desktop state.",
+        )
+    )
+    engine.store.update_run(created.id, state=updated.state)
+
+    proven = engine.get_desktop_effect_proof_preview(created.id)
+    assert proven["status"] == "proof_available"
+    assert proven["requires_attention"] is False
+    assert proven["proof_tool"] == "desktop_screenshot"
+    assert proven["proof_snapshot"]["id"] == "desktop-proof"
+    assert any("snapshot=desktop-proof" in item for item in proven["ledger"])
+
+def test_operator_dispatch_runs_desktop_effect_proof(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Use supervised desktop control", "Desktop proof queue", str(tmp_path), [])
+        created.state.step_count = 1
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="desktop-click-1",
+                name="desktop_click",
+                ok=True,
+                summary="Approved supervised desktop click recorded.",
+            )
+        )
+        engine.store.update_run(created.id, status="paused", state=created.state)
+        await engine.recover_stale_runs()
+        queue = engine.get_operator_action_queue(limit=50)
+        item = next(item for item in queue.items if item.run_id == created.id and item.ui_target == "desktop_effect_proof")
+
+        async def fake_execute(_run, action):  # noqa: ANN001
+            assert action["tool"] == "desktop_screenshot"
+            return ToolResult(
+                True,
+                "desktop_screenshot",
+                "Captured supervised desktop screenshot.",
+                {"path": str(tmp_path / "desktop-proof.png")},
+                desktop_snapshots=[
+                    DesktopSnapshot(
+                        id="desktop-proof",
+                        timestamp="2026-06-29T10:00:00+00:00",
+                        title="Desktop screenshot",
+                        path=str(tmp_path / "desktop-proof.png"),
+                        summary="Captured supervised desktop screenshot.",
+                    )
+                ],
+            )
+
+        engine._execute_action = fake_execute  # type: ignore[method-assign]
+        result = await engine.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item.id, decision="dispatch", confirmed=True)
+        )
+        updated = engine.store.get_run(created.id)
+
+        assert result.status == "dispatched"
+        assert result.action_taken == "desktop_effect_proof"
+        assert updated.state.tool_calls[-1].name == "desktop_screenshot"
+        assert updated.state.tool_calls[-1].args["model_guard"] == "desktop_effect_unverified"
+        assert updated.state.desktop_snapshots[-1].id == "desktop-proof"
+        assert "desktop_effect_check_required" not in updated.state.action_context.compact_prompt
+        assert updated.state.next_step == "Review desktop screenshot proof before any further desktop click/type."
+        refreshed_queue = result.queue.model_dump()
+        assert not any(
+            queue_item["run_id"] == created.id and queue_item["ui_target"] == "desktop_effect_proof"
+            for queue_item in refreshed_queue["items"]
+        )
+
+    asyncio.run(run())
+
+def test_operator_dispatch_refreshes_stale_desktop_effect_proof_metadata_without_new_capture(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Use supervised desktop control", "Desktop proof metadata repair", str(tmp_path), [])
+        created.state.step_count = 1
+        created.state.tool_calls.extend(
+            [
+                ToolCallRecord(
+                    id="desktop-click-1",
+                    name="desktop_click",
+                    ok=True,
+                    summary="Approved supervised desktop click recorded.",
+                    created_at="2026-06-29T10:00:00+00:00",
+                ),
+                ToolCallRecord(
+                    id="desktop-shot-1",
+                    name="desktop_screenshot",
+                    ok=True,
+                    summary="Captured supervised desktop screenshot.",
+                    created_at="2026-06-29T10:01:00+00:00",
+                ),
+            ]
+        )
+        created.state.desktop_snapshots.append(
+            DesktopSnapshot(
+                id="desktop-proof",
+                timestamp="2026-06-29T10:01:00+00:00",
+                title="Desktop screenshot",
+                path=str(tmp_path / "desktop-proof.png"),
+                summary="Captured supervised desktop screenshot.",
+            )
+        )
+        stale_report = DesktopEffectProofReport(
+            run_id=created.id,
+            generated_at="2026-06-29T10:00:30+00:00",
+            status="needs_proof",
+            requires_attention=True,
+            latest_action_id="desktop-click-1",
+            latest_action_tool="desktop_click",
+            latest_action_summary="Approved supervised desktop click recorded.",
+            recommended_action="Stale report still thinks proof is missing.",
+        )
+        created.state.desktop_effect_proof = stale_report
+        created.state.handoff_summary.desktop_effect_proof = stale_report
+        engine.store.update_run(created.id, status="paused", state=created.state)
+
+        report = await engine.recover_stale_runs()
+        queue = report["operator_action_queue"]
+        item = next(
+            item
+            for item in queue["items"]
+            if item["run_id"] == created.id and item["ui_target"] == "desktop_effect_proof"
+        )
+
+        async def fail_execute(_run, _action):  # noqa: ANN001
+            raise AssertionError("metadata repair should not capture another desktop screenshot")
+
+        engine._execute_action = fail_execute  # type: ignore[method-assign]
+        result = await engine.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=True)
+        )
+        updated = engine.store.get_run(created.id)
+        events = engine.store.list_events(created.id, limit=20)
+
+        assert result.status == "dispatched"
+        assert result.action_taken == "desktop_effect_proof"
+        assert [call.name for call in updated.state.tool_calls].count("desktop_screenshot") == 1
+        assert any(event["kind"] == "desktop_effect_proof_repaired" for event in events)
+        assert not any(event["kind"] == "desktop_effect_proof_captured" for event in events)
+        assert updated.state.desktop_effect_proof.status == "proof_available"
+        assert updated.state.handoff_summary.desktop_effect_proof.proof_snapshot is not None
+        assert updated.state.handoff_summary.desktop_effect_proof.proof_snapshot.id == "desktop-proof"
+        assert updated.state.desktop_effect_proof_repairs.latest_outcome == "metadata_refreshed"
+        assert updated.state.desktop_effect_proof_repairs.metadata_refreshed_count == 1
+        assert updated.state.desktop_effect_proof_repairs.capture_completed_count == 0
+        assert updated.state.handoff_summary.desktop_effect_proof_repairs.latest_outcome == "metadata_refreshed"
+        assert not any(
+            queue_item.run_id == created.id and queue_item.ui_target == "desktop_effect_proof"
+            for queue_item in result.queue.items
+        )
+
+    asyncio.run(run())
+
+def test_supervisor_queues_report_integrity_desktop_effect_proof_repair(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Use supervised desktop control", "Desktop proof integrity queue", str(tmp_path), [])
+        stale_report = DesktopEffectProofReport(
+            run_id=created.id,
+            generated_at="2026-06-29T10:00:00+00:00",
+            status="not_required",
+            requires_attention=False,
+            recommended_action="No desktop proof required yet.",
+        )
+        created.state.desktop_effect_proof = stale_report
+        created.state.handoff_summary.desktop_effect_proof = stale_report
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="desktop-click-1",
+                name="desktop_click",
+                ok=True,
+                summary="Approved supervised desktop click recorded after the stale proof preview.",
+            )
+        )
+        engine.store.update_run(created.id, status="paused", state=created.state)
+
+        report = await engine.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        proof_items = [item for item in queue["items"] if item["run_id"] == created.id and item["reason"] == "desktop_effect_proof"]
+
+        assert report["desktop_effect_proof_attention_count"] == 1
+        assert entry["desktop_effect_proof_requires_attention"] is True
+        assert entry["report_integrity_status"] == "needs_refresh"
+        assert entry["report_integrity_desktop_effect_proof_requires_attention"] is True
+        assert "handoff.desktop_effect_proof.status" in entry["report_integrity_desktop_effect_proof_detail"]
+        assert queue["desktop_effect_proof_count"] == 1
+        assert proof_items
+        item = proof_items[0]
+        assert item["endpoint"] == f"/api/runs/{created.id}/desktop-effect/verify"
+        assert item["method"] == "POST"
+        assert item["ui_target"] == "desktop_effect_proof"
+        assert any("report_integrity=needs_refresh" in detail for detail in item["details"])
+        assert any("handoff.desktop_effect_proof.status" in detail for detail in item["details"])
+
+    asyncio.run(run())
+def test_choose_action_requires_desktop_effect_check_before_next_click(tmp_path: Path) -> None:
+    class DesktopClickModel:
+        async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+            return '{"tool":"desktop_click","args":{"x":120,"y":240},"thought_summary":"Click again after approval."}'
+
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        engine.model = DesktopClickModel()  # type: ignore[assignment]
+        created = engine.store.create_run("Use supervised desktop control", "Desktop effect guard", str(tmp_path), [])
+        created.state.step_count = 1
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="desktop-click-1",
+                name="desktop_click",
+                ok=True,
+                summary="Approved supervised desktop click recorded.",
+            )
+        )
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "desktop_screenshot"
+        assert action["model_guard"] == "desktop_effect_unverified"
+        assert action["guarded_tool"] == "desktop_click"
+        assert action["guarded_desktop_tool"] == "desktop_click"
+        assert "before another desktop_click" in action["thought_summary"]
+        assert "desktop_effect_check_required" in created.state.action_context.compact_prompt
+        assert any(
+            "desktop_effect_unverified" in item and "after=desktop_click" in item
+            for item in created.state.action_context.model_guard_ledger
+        )
+        assert created.state.model_interactions[-1].fallback_used is True
+        assert "unverified desktop action" in created.state.model_interactions[-1].summary
+
+    asyncio.run(run())
+
+
+def test_choose_action_allows_desktop_click_after_effect_check(tmp_path: Path) -> None:
+    class DesktopClickModel:
+        async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+            return '{"tool":"desktop_click","args":{"x":120,"y":240},"thought_summary":"Click after screenshot proof."}'
+
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        engine.model = DesktopClickModel()  # type: ignore[assignment]
+        created = engine.store.create_run("Use supervised desktop control", "Desktop effect cleared", str(tmp_path), [])
+        created.state.step_count = 1
+        created.state.tool_calls.extend(
+            [
+                ToolCallRecord(
+                    id="desktop-click-1",
+                    name="desktop_click",
+                    ok=True,
+                    summary="Approved supervised desktop click recorded.",
+                ),
+                ToolCallRecord(
+                    id="desktop-shot-1",
+                    name="desktop_screenshot",
+                    ok=True,
+                    summary="Captured supervised desktop screenshot.",
+                ),
+            ]
+        )
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "desktop_click"
+        assert "model_guard" not in action
+        assert "desktop_effect_check_required" not in created.state.action_context.compact_prompt
+
+    asyncio.run(run())
+
+def test_model_guard_ledger_survives_tool_result_and_handoff(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Record guard", "Guard ledger", str(tmp_path), ["Tests pass"])
+        action = {
+            "tool": "run_tests",
+            "args": {"command": "pytest -q"},
+            "thought_summary": "Re-anchor on current verify task.",
+            "model_guard": "current_task_mismatch",
+            "guarded_tool": "patch_propose",
+            "current_task_id": "task-verify",
+            "current_task_kind": "verify",
+            "guard_reason": "verify_task_selected_edit_tool",
+        }
+
+        await engine._record_tool_result(
+            created.id,
+            ToolResult(True, "run_tests", "Tests passed.", {"command": "pytest -q"}),
+            action=action,
+        )
+        updated = engine.store.get_run(created.id)
+
+        latest_args = updated.state.tool_calls[-1].args
+        assert latest_args["model_guard"] == "current_task_mismatch"
+        assert latest_args["guarded_tool"] == "patch_propose"
+        assert any(
+            "current_task_mismatch" in item
+            and "from=patch_propose" in item
+            and "reason=verify_task_selected_edit_tool" in item
+            for item in updated.state.action_context.model_guard_ledger
+        )
+        assert updated.state.handoff_summary.action_context.model_guard_ledger == updated.state.action_context.model_guard_ledger
+        assert "model_guards=current_task_mismatch" in updated.state.action_context.compact_prompt
+
+    asyncio.run(run())
+
+
+def test_edit_evidence_ledger_survives_patch_result_handoff_and_task(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Record edit evidence", "Edit evidence", str(tmp_path), ["Patch app.py safely"])
+        created.state.task_graph = [
+            TaskNode(
+                id="task-edit",
+                title="Patch app.py safely",
+                status="pending",
+                kind="edit",
+            )
+        ]
+        created.state.current_task_id = "task-edit"
+        patch = PatchProposal(
+            id="patch-1",
+            title="Patch app.py safely",
+            summary="Use the safer implementation.",
+            files=["app.py"],
+            diff="--- a/app.py\n+++ b/app.py\n@@\n-old\n+new\n",
+            status="pending",
+        )
+
+        await engine._record_tool_result(
+            created.id,
+            ToolResult(True, "patch_propose", "Patch proposal recorded.", {"files": ["app.py"]}, patch_proposals=[patch]),
+            action={"tool": "patch_propose", "args": {"files": ["app.py"]}, "thought_summary": "Propose patch."},
+        )
+        updated = engine.store.get_run(created.id)
+        task = updated.state.task_graph[0]
+
+        assert any("edit:evidence | patch_propose:pending:patch-1" in item for item in task.evidence)
+        assert task.notes.startswith("Latest edit evidence: edit:evidence | patch_propose")
+        assert any("patch:pending:patch-1:app.py" in item for item in updated.state.action_context.edit_evidence_ledger)
+        assert updated.state.handoff_summary.action_context.edit_evidence_ledger == updated.state.action_context.edit_evidence_ledger
+        assert "edit_evidence=patch:pending:patch-1:app.py" in updated.state.action_context.compact_prompt
 
     asyncio.run(run())
 
@@ -2403,6 +4238,43 @@ def test_resume_recovery_queues_run_and_clears_retry_counter(tmp_path: Path) -> 
         assert preflight["data"]["source"] == "recovery"
         assert preflight["data"]["policy_simulation"]["policy_action"] == "recover"
         assert "Explicit recovery resume" in preflight["data"]["reason"]
+
+    asyncio.run(run())
+
+
+def test_recovery_plan_act_milestone_executes_instead_of_self_pausing(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run("Execute recovery", "Recovery act", str(tmp_path), [])
+        created.state.recovery_plan.status = "active"
+        created.state.recovery_plan.tool = "shell"
+        created.state.recovery_plan.failure_kind = "timeout"
+        created.state.recovery_plan.summary = "Repeated shell timeout."
+        created.state.recovery_plan.next_action = "Run narrower diagnostic."
+        created.state.recovery_plan.steps = ["Run narrower diagnostic.", "Checkpoint recovery result."]
+        created.state.current_plan = created.state.recovery_plan.steps
+        created.state.task_graph = engine._tasks_from_plan(created.state.current_plan, [])
+        created.state.current_task_id = created.state.task_graph[0].id
+        created.state.next_step = created.state.recovery_plan.next_action
+        created.state.milestone = "act"
+        engine.store.update_run(created.id, status="running", state=created.state)
+
+        async def fake_choose(_run, _memory_text):  # noqa: ANN001
+            return {"tool": "shell", "args": {"command": "echo recovery"}, "thought_summary": "Run narrower diagnostic."}
+
+        async def fake_execute(_run, action):  # noqa: ANN001
+            return ToolResult(True, action["tool"], "exit 0: recovery", action.get("args", {}))
+
+        engine._choose_action = fake_choose  # type: ignore[method-assign]
+        engine._execute_action = fake_execute  # type: ignore[method-assign]
+
+        await engine._run_one_milestone(created.id)
+        updated = engine.store.get_run(created.id)
+
+        assert updated.status == "running"
+        assert updated.state.milestone == "verify"
+        assert updated.state.recovery_plan.status == "resolved"
+        assert updated.state.tool_calls[-1].name == "shell"
 
     asyncio.run(run())
 
@@ -2715,6 +4587,147 @@ def test_startup_recovery_pauses_stale_running_active_recovery(tmp_path: Path) -
     asyncio.run(run())
 
 
+def test_manual_resume_consumes_startup_recovered_handoff_blocker(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run(
+            "Resume after backend restart",
+            "Startup resume",
+            str(tmp_path),
+            ["Tests pass"],
+        )
+        engine_one.store.update_run(created.id, status="running", state=created.state)
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        recovered = engine_two.store.get_run(created.id)
+
+        assert report["recovered"] == 1
+        assert recovered.status == "paused"
+        assert any("resume explicitly from handoff" in blocker for blocker in recovered.state.blockers)
+
+        updated = await engine_two.resume_run(created.id)
+        engine_two._cancel_task(created.id)
+        resumed = engine_two.store.get_run(created.id)
+        events = engine_two.store.list_events(created.id)
+        preflight = next(event for event in events if event["kind"] == "resume_preflight")
+
+        assert updated.status == "queued"
+        assert not any("resume explicitly from handoff" in blocker for blocker in resumed.state.blockers)
+        assert "Manual resume accepted the recovered startup handoff blocker." in resumed.state.facts_learned
+        assert preflight["data"]["accepted"] is True
+        assert preflight["data"]["source"] == "manual"
+
+    asyncio.run(run())
+
+
+def test_manual_resume_consumes_orphan_startup_waiting_approval_blocker(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Resume orphan approval state",
+            "Orphan approval",
+            str(tmp_path),
+            ["Tests pass"],
+        )
+        created.state.blockers.append(
+            "Supervisor found waiting_approval status without a pending approval after startup."
+        )
+        created.state.next_step = "Review replay and replan before continuing."
+        engine.store.update_run(created.id, status="paused", state=created.state)
+
+        updated = await engine.resume_run(created.id)
+        engine._cancel_task(created.id)
+        resumed = engine.store.get_run(created.id)
+        events = engine.store.list_events(created.id)
+        preflight = next(event for event in events if event["kind"] == "resume_preflight")
+
+        assert updated.status == "queued"
+        assert "Supervisor found waiting_approval status without a pending approval after startup." not in resumed.state.blockers
+        assert "Manual resume cleared recovered waiting_approval state after confirming no pending approvals." in resumed.state.facts_learned
+        assert preflight["data"]["accepted"] is True
+        assert preflight["data"]["source"] == "manual"
+
+    asyncio.run(run())
+
+
+def test_manual_resume_clears_stale_loop_step_limit_after_cap_increase(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path, max_loop_steps=32)
+        created = engine.store.create_run(
+            "Resume after loop cap increase",
+            "Loop cap resume",
+            str(tmp_path),
+            ["Tests pass"],
+        )
+        created.state.step_count = 8
+        created.state.blockers.append("Reached MAX_LOOP_STEPS.")
+        created.state.next_step = "Ask user whether to continue."
+        engine.store.update_run(created.id, status="blocked", state=created.state)
+
+        updated = await engine.resume_run(created.id)
+        engine._cancel_task(created.id)
+        resumed = engine.store.get_run(created.id)
+        preflight = next(event for event in engine.store.list_events(created.id) if event["kind"] == "resume_preflight")
+
+        assert updated.status == "queued"
+        assert "Reached MAX_LOOP_STEPS." not in resumed.state.blockers
+        assert resumed.state.next_step != "Ask user whether to continue."
+        assert "Resume cleared stale MAX_LOOP_STEPS blocker after the configured loop cap increased." in resumed.state.facts_learned
+        assert preflight["data"]["accepted"] is True
+
+    asyncio.run(run())
+
+
+def test_approving_objective_readiness_ask_user_resolves_waiting_outcome(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Resolve objective readiness approval",
+            "Objective approval",
+            str(tmp_path),
+            [],
+        )
+        created.state.objective_readiness_proof_outcomes.append(
+            ObjectiveReadinessProofOutcome(
+                id="obj-proof-waiting",
+                item_id="patch_first_editing",
+                tool="ask_user",
+                evidence_label="edit",
+                strategy="patch_review",
+                outcome="waiting_approval",
+                ok=False,
+                summary="Approval required before patch-first proof.",
+            )
+        )
+        engine.store.update_run(created.id, status="waiting_approval", state=created.state)
+        approval = engine.store.create_approval(
+            created.id,
+            "ask_user",
+            {
+                "tool_name": "ask_user",
+                "args": {
+                    "question": "Objective readiness proof for patch_first_editing requires supervised approval.",
+                    "reason": "Patch proposal path needs approval.",
+                },
+            },
+            "Objective readiness proof for patch_first_editing requires supervised approval.",
+        )
+
+        updated = await engine.approve_action(created.id, int(approval["id"]))
+        engine._cancel_task(created.id)
+        resolved = engine.store.get_run(created.id)
+        latest = resolved.state.objective_readiness_proof_outcomes[-1]
+
+        assert updated.status in {"queued", "paused", "waiting_approval"}
+        assert latest.item_id == "patch_first_editing"
+        assert latest.tool == "ask_user"
+        assert latest.outcome == "verified"
+        assert "Objective readiness approval resolved for patch_first_editing." in resolved.state.facts_learned
+
+    asyncio.run(run())
+
+
 def test_run_lease_acquire_heartbeat_and_release(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     created = engine.store.create_run("Lease lifecycle", "Lease", str(tmp_path), [])
@@ -2788,6 +4801,564 @@ def test_startup_recovery_repairs_expired_lease(tmp_path: Path) -> None:
 
     asyncio.run(run())
 
+def test_supervisor_queues_promotion_audit_verification_attention(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "README.md").write_text("old\n", encoding="utf-8")
+        (workspace / "README.md").write_text("new\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Gate source promotion",
+            "Promotion audit attention",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        await engine_one.request_workspace_promotion(created.id)
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        promotion_items = [item for item in queue["items"] if item["reason"].startswith("promotion_audit")]
+
+        assert report["promotion_audit_attention_count"] == 1
+        assert entry["promotion_audit_requires_attention"] is True
+        assert entry["promotion_audit"]["status"] == "needs_verification"
+        assert "promotion_audit" in entry["operator_attention_reasons"]
+        assert promotion_items
+        assert promotion_items[0]["ui_target"] == "promotion_verification"
+        assert promotion_items[0]["endpoint"] == f"/api/runs/{created.id}/promotion-audit/verify"
+        assert queue["promotion_count"] == 1
+        assert queue["promotion_approval_count"] == 0
+
+    asyncio.run(run())
+
+
+def test_operator_queue_marks_workspace_promote_approval_as_promotion_gate(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "README.md").write_text("old\n", encoding="utf-8")
+        (workspace / "README.md").write_text("new\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Approve source promotion",
+            "Promotion approval gate",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-promotion-gate-test",
+                name="shell",
+                args={"command": "python -m pytest backend/tests/test_workspace.py -q"},
+                ok=True,
+                summary="pytest passed before source promotion.",
+                created_at="2026-06-28T08:05:00+00:00",
+            )
+        )
+        engine_one.store.update_run(created.id, status="paused", state=created.state)
+        await engine_one.request_workspace_promotion(created.id)
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        queue = report["operator_action_queue"]
+        item = next(item for item in queue["items"] if item["reason"] == "approval")
+
+        assert item["approval_kind"] == "workspace_promote"
+        assert item["promotion_gate"] is True
+        assert queue["approval_count"] == 1
+        assert queue["promotion_approval_count"] == 1
+
+    asyncio.run(run())
+
+def test_supervisor_queues_promotion_audit_unresolved_approval_history(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "README.md").write_text("old\n", encoding="utf-8")
+        (workspace / "README.md").write_text("new\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Resolve reviewed source promotion approval",
+            "Promotion audit approval history",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-promotion-history-test",
+                name="shell",
+                args={"command": "python -m pytest backend/tests/test_workspace.py -q"},
+                ok=True,
+                summary="pytest passed before source promotion.",
+                created_at="2026-06-27T08:05:00+00:00",
+            )
+        )
+        engine_one.store.update_run(created.id, status="paused", state=created.state)
+        await engine_one.request_workspace_promotion(created.id)
+        approval = engine_one.store.list_approvals(created.id, status="pending")[0]
+        review_event = engine_one.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed workspace promotion approval.",
+            {
+                "decision": "open",
+                "operator_action": {
+                    "id": f"{created.id}:approval:workspace_promote",
+                    "run_id": created.id,
+                    "title": created.title,
+                    "reason": "approval",
+                    "action": "Review pending workspace promotion approval.",
+                    "ui_target": "approval",
+                    "approval_id": approval["id"],
+                },
+            },
+        )
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        promotion_items = [
+            item
+            for item in queue["items"]
+            if item["reason"] == "promotion_audit_promotion_approval_history_unresolved"
+        ]
+
+        assert entry["promotion_audit_requires_attention"] is True
+        assert entry["promotion_audit"]["status"] == "ready"
+        assert entry["promotion_audit"]["unresolved_approval_history_count"] == 1
+        assert "promotion_audit" in entry["operator_attention_reasons"]
+        assert promotion_items
+        assert len(promotion_items) == 1
+        item = promotion_items[0]
+        assert item["ui_target"] == "approval"
+        assert item["approval_id"] == approval["id"]
+        assert item["approval_kind"] == "workspace_promote"
+        assert item["promotion_gate"] is True
+        assert item["endpoint"] == f"/api/runs/{created.id}/approvals"
+        assert f"approval_id={approval['id']}" in item["details"]
+        assert queue["promotion_count"] == 1
+        assert queue["promotion_approval_count"] == 1
+
+        opened = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="open")
+        )
+        assert opened.status == "reviewed"
+        assert opened.action_taken == "open"
+        assert opened.event_kind == "operator_action_reviewed"
+        review_events = [
+            event
+            for event in engine_two.store.list_events(created.id)
+            if event["kind"] == "operator_action_reviewed"
+        ]
+        assert review_events[-1]["data"]["operator_action"]["approval_id"] == approval["id"]
+        assert review_events[0]["id"] == review_event["id"]
+
+    asyncio.run(run())
+
+def test_operator_dispatch_runs_promotion_audit_verification(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "README.md").write_text("old\n", encoding="utf-8")
+        (workspace / "README.md").write_text("new\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Dispatch source promotion verification",
+            "Promotion audit dispatch",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        await engine_one.request_workspace_promotion(created.id)
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        item = next(
+            item
+            for item in report["operator_action_queue"]["items"]
+            if item["ui_target"] == "promotion_verification"
+        )
+
+        unconfirmed = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=False)
+        )
+        assert unconfirmed.status == "requires_confirmation"
+
+        dispatched = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=True)
+        )
+        updated = engine_two.store.get_run(created.id)
+
+        assert dispatched.status == "dispatched"
+        assert dispatched.action_taken == "promotion_verification"
+        assert updated.state.promotion_audit.status == "ready"
+        assert updated.state.promotion_audit.ready_to_promote is True
+        assert updated.state.tool_calls[-1].ok is True
+        assert updated.state.tool_calls[-1].name == "shell"
+        assert "compileall" in str(updated.state.tool_calls[-1].args.get("command"))
+        assert dispatched.queue.promotion_count == 0
+        event_kinds = [event["kind"] for event in engine_two.store.list_events(created.id)]
+        assert "promotion_audit_verification" in event_kinds
+        assert "operator_action_dispatched" in event_kinds
+
+    asyncio.run(run())
+
+
+def test_operator_dispatch_requests_patch_apply_approval_for_active_promotion_repair(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "broken.py").write_text("def broken():\n    return 'old'\n", encoding="utf-8")
+        (workspace / "broken.py").write_text("def broken():\n    return 'new'\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Approve active promotion repair patch",
+            "Promotion repair patch approval",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        await engine_one.refresh_workspace_diff(created.id)
+        run_record = engine_one.store.get_run(created.id)
+        run_record.state.promotion_verification = PromotionVerificationReport(
+            run_id=created.id,
+            generated_at="2026-06-27T08:00:00+00:00",
+            status="needs_retry",
+            attempt_count=1,
+            failed_count=1,
+            latest_failed_command="python -m compileall .",
+            latest_failure_kind="syntax_error",
+            latest_suspected_file="broken.py",
+            latest_repair_hint="Repair the broken Python file.",
+            next_command="python -m py_compile broken.py",
+            summary="Promotion verification failed for broken.py.",
+            recommended_action="Repair broken.py before promotion.",
+            latest_attempt=PromotionVerificationAttemptRecord(
+                command="python -m compileall .",
+                ok=False,
+                failure_kind="syntax_error",
+                suspected_file="broken.py",
+                suspected_line=2,
+                repair_hint="Repair the broken Python file.",
+                evidence_excerpt="SyntaxError: invalid syntax",
+                created_at="2026-06-27T08:00:00+00:00",
+            ),
+            attempts=[
+                PromotionVerificationAttemptRecord(
+                    command="python -m compileall .",
+                    ok=False,
+                    failure_kind="syntax_error",
+                    suspected_file="broken.py",
+                    suspected_line=2,
+                    repair_hint="Repair the broken Python file.",
+                    evidence_excerpt="SyntaxError: invalid syntax",
+                    created_at="2026-06-27T08:00:00+00:00",
+                )
+            ],
+        )
+        run_record.state.patch_proposals.append(
+            PatchProposal(
+                id="patch-repair",
+                title="Repair broken.py",
+                summary="Apply the active promotion repair patch.",
+                files=["broken.py"],
+                diff="--- a/broken.py\n+++ b/broken.py\n@@ -1,2 +1,2 @@\n def broken():\n-    return 'new'\n+    return 'fixed'\n",
+            )
+        )
+        engine_one.store.update_run(created.id, status="paused", state=run_record.state)
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        item = next(
+            item
+            for item in report["operator_action_queue"]["items"]
+            if item["ui_target"] == "patch_apply_approval"
+        )
+
+        assert item["endpoint"] == f"/api/runs/{created.id}/patches/patch-repair/apply"
+        assert item["method"] == "POST"
+        assert item["promotion_gate"] is True
+        assert report["operator_action_queue"]["promotion_count"] == 1
+        assert report["operator_action_queue"]["promotion_approval_count"] == 1
+
+        unconfirmed = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=False)
+        )
+        assert unconfirmed.status == "requires_confirmation"
+
+        dispatched = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=True)
+        )
+        approvals = engine_two.store.list_approvals(created.id, status="pending")
+        updated = engine_two.store.get_run(created.id)
+
+        assert dispatched.status == "dispatched"
+        assert dispatched.action_taken == "patch_apply_approval"
+        assert updated.status == "waiting_approval"
+        assert len(approvals) == 1
+        assert approvals[0]["action_kind"] == "patch_apply"
+        assert approvals[0]["payload"]["args"]["patch_id"] == "patch-repair"
+        assert approvals[0]["payload"]["args"]["diff"].startswith("--- a/broken.py")
+        assert dispatched.queue.approval_count >= 1
+        assert dispatched.queue.promotion_approval_count >= 1
+        event_kinds = [event["kind"] for event in engine_two.store.list_events(created.id)]
+        assert "approval_required" in event_kinds
+        assert "operator_action_dispatched" in event_kinds
+
+    asyncio.run(run())
+
+
+
+def test_operator_dispatch_requests_patch_rollback_approval_for_self_scaffold_review(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "app.py").write_text("print('new')\n", encoding="utf-8")
+        manifest_path = tmp_path / "rollback-manifest.json"
+        manifest_path.write_text("{}\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Review rollback intent before broad autonomy",
+            "Self scaffold rollback approval",
+            str(workspace),
+            [],
+            tool_profile="ornith_self_scaffold",
+        )
+        created.state.patch_applications.append(
+            PatchApplication(
+                id="apply-roll-1",
+                patch_id="patch-roll-1",
+                status="applied",
+                files=["app.py"],
+                backup_id="backup-roll-1",
+                manifest_path=str(manifest_path),
+                summary="Applied patch-roll-1 to app.py.",
+                applied_at="2026-06-29T00:00:00+00:00",
+            )
+        )
+        engine_one.store.update_run(created.id, status="paused", state=created.state)
+        engine_one.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator accepted self-scaffold edit evidence and requested guarded rollback posture.",
+            {
+                "operator_action": {
+                    "ui_target": "self_scaffold",
+                    "reason": "self_scaffold",
+                    "action": "Review scaffold edit evidence.",
+                },
+                "self_scaffold_review": {
+                    "status": "needs_review",
+                    "change_count": 1,
+                    "guard_count": 0,
+                    "reviewed_change_count": 1,
+                    "reviewed_change_ids": ["edit_evidence:0:patch-apply-applied-patch-roll-1-app-py"],
+                    "remaining_goal_review": False,
+                },
+            },
+        )
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        item = next(
+            item
+            for item in queue["items"]
+            if item["reason"] == "self_scaffold_rollback"
+        )
+
+        assert report["self_scaffold_rollback_attention_count"] == 1
+        assert entry["self_scaffold_rollback_requires_attention"] is True
+        assert entry["self_scaffold_rollback_patch_count"] == 1
+        assert "self_scaffold_rollback" in entry["operator_attention_reasons"]
+        assert entry["operator_attention_action"] == entry["self_scaffold_rollback_action"]
+        assert queue["self_scaffold_rollback_count"] == 1
+        assert item["ui_target"] == "patch_rollback_approval"
+        assert item["approval_kind"] == "patch_rollback"
+        assert item["method"] == "POST"
+        assert item["endpoint"] == f"/api/runs/{created.id}/patches/patch-roll-1/rollback"
+        assert "no_auto_mutation=true" in item["details"]
+
+        unconfirmed = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=False)
+        )
+        assert unconfirmed.status == "requires_confirmation"
+        assert engine_two.store.list_approvals(created.id, status="pending") == []
+
+        dispatched = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=True)
+        )
+        approvals = engine_two.store.list_approvals(created.id, status="pending")
+        updated = engine_two.store.get_run(created.id)
+
+        assert dispatched.status == "dispatched"
+        assert dispatched.action_taken == "patch_rollback_approval"
+        assert dispatched.message == "Patch rollback approval was requested; no rollback was executed."
+        assert updated.status == "waiting_approval"
+        assert updated.state.active_tool == "patch_rollback"
+        assert len(approvals) == 1
+        assert approvals[0]["action_kind"] == "patch_rollback"
+        assert approvals[0]["payload"]["args"]["patch_id"] == "patch-roll-1"
+        assert approvals[0]["payload"]["args"]["backup_id"] == "backup-roll-1"
+        assert approvals[0]["payload"]["preview"]["requires_approval"] is True
+        assert approvals[0]["payload"]["preview"]["mutation_automatic"] is False
+        assert all(application.status != "rolled_back" for application in updated.state.patch_applications)
+        assert dispatched.queue.approval_count >= 1
+        event_kinds = [event["kind"] for event in engine_two.store.list_events(created.id)]
+        assert "operator_action_dispatched" in event_kinds
+        assert "approval_required" in event_kinds
+
+    asyncio.run(run())
+
+
+def test_promotion_audit_verification_uses_alternate_after_failed_attempt(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "README.md").write_text("old\n", encoding="utf-8")
+        (workspace / "README.md").write_text("new\n", encoding="utf-8")
+        created = engine_one.store.create_run(
+            "Retry source promotion verification narrowly",
+            "Promotion verification retry",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        await engine_one.request_workspace_promotion(created.id)
+        prepared = engine_one.store.get_run(created.id)
+        prepared.state.repo_map.test_commands = ["python -m py_compile missing_file_for_promotion_retry.py"]
+        engine_one.store.update_run(prepared.id, status="paused", state=prepared.state)
+
+        first = await engine_one.run_promotion_audit_verification(created.id)
+        assert first.state.promotion_audit.status == "needs_verification"
+        assert first.state.promotion_verification.status == "needs_retry"
+        assert first.state.promotion_verification.failed_count == 1
+        assert first.state.promotion_verification.next_command == "python -m compileall ."
+        assert first.state.promotion_verification.latest_failure_kind == "missing_file"
+        assert first.state.promotion_verification.latest_suspected_file == "missing_file_for_promotion_retry.py"
+        assert "missing_file_for_promotion_retry.py" in first.state.promotion_verification.latest_repair_hint
+        assert "missing_file_for_promotion_retry.py" in first.state.next_step
+
+        second = await engine_one.run_promotion_audit_verification(created.id)
+        report = second.state.promotion_verification
+        events = [
+            event
+            for event in engine_one.store.list_events(created.id)
+            if event["kind"] == "promotion_audit_verification"
+        ]
+
+        assert second.state.promotion_audit.status == "ready"
+        assert second.state.promotion_audit.ready_to_promote is True
+        assert report.status == "ready"
+        assert report.attempt_count == 2
+        assert report.failed_count == 1
+        assert report.success_count == 1
+        assert report.attempts[-1].command == "python -m compileall ."
+        assert report.attempts[-1].selected_alternate is True
+        assert events[0]["data"]["command"] == "python -m py_compile missing_file_for_promotion_retry.py"
+        assert events[1]["data"]["command"] == "python -m compileall ."
+        assert events[1]["data"]["selected_alternate"] is True
+
+    asyncio.run(run())
+
+
+def test_promotion_audit_verification_classifies_syntax_error(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        source = tmp_path / "source"
+        workspace = tmp_path / "workspace"
+        source.mkdir()
+        workspace.mkdir()
+        (source / "broken.py").write_text("print('old')\n", encoding="utf-8")
+        (workspace / "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+        created = engine.store.create_run(
+            "Classify promotion syntax failure",
+            "Promotion syntax classifier",
+            str(workspace),
+            [],
+            workspace_isolation=WorkspaceIsolation(
+                enabled=True,
+                mode="copy",
+                source_path=str(source),
+                workspace_path=str(workspace),
+                summary="Isolated copy.",
+            ),
+        )
+        await engine.request_workspace_promotion(created.id)
+        prepared = engine.store.get_run(created.id)
+        prepared.state.repo_map.test_commands = ["python -m py_compile broken.py"]
+        engine.store.update_run(prepared.id, status="paused", state=prepared.state)
+
+        updated = await engine.run_promotion_audit_verification(created.id)
+        attempt = updated.state.promotion_verification.latest_attempt
+
+        assert updated.state.promotion_verification.status == "needs_retry"
+        assert attempt.failure_kind == "syntax_error"
+        assert attempt.suspected_file.endswith("broken.py")
+        assert attempt.suspected_line == 1
+        assert "broken.py:1" in attempt.repair_hint
+        assert "SyntaxError" in attempt.evidence_excerpt
+        assert updated.state.promotion_verification.latest_repair_hint == attempt.repair_hint
+
+    asyncio.run(run())
+
+
 def test_supervisor_queues_missing_source_evidence_attention(tmp_path: Path) -> None:
     async def run() -> None:
         engine_one = make_engine(tmp_path)
@@ -2816,10 +5387,183 @@ def test_supervisor_queues_missing_source_evidence_attention(tmp_path: Path) -> 
 
     asyncio.run(run())
 
+def test_supervisor_queues_readiness_source_ref_gate_attention(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run(
+            "Improve AgentOrinth into a Codex-like long coding harness",
+            "Readiness source refs attention",
+            str(tmp_path),
+            ["Readiness claim has source-visible proof"],
+        )
+        created.state.acceptance_evidence.append(
+            AcceptanceCriterionEvidence(
+                id="source-visible-readiness",
+                criterion="Readiness claim has source-visible proof",
+                status="verified",
+                required_labels=["web", "browser"],
+                matched_labels=["web", "browser"],
+            )
+        )
+        created.state.web_sources.append(
+            WebSource(
+                id="web-source-ref-only",
+                title="Source ref proof",
+                url="https://example.test/source-ref",
+                timestamp="2026-06-28T10:00:00+00:00",
+                excerpt="Web source ref exists but browser ref is missing from proof history.",
+                citation="[web-source-ref-only]",
+            )
+        )
+        review_event = engine_one.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator accepted self-scaffold review.",
+            {"self_scaffold_review": {"reviewed_change_count": 1, "reviewed_change_ids": ["guard-1"]}},
+        )
+        claim_event = engine_one.store.append_event(
+            created.id,
+            "readiness_claim",
+            "Readiness claim accepted in older source-ref proof.",
+            {"readiness_completion": {"can_claim_milestone": True}},
+        )
+        created.state.readiness_rehearsal = ReadinessRehearsalReport(
+            run_id=created.id,
+            generated_at="2026-06-28T10:01:00+00:00",
+            status="passed",
+            summary="Readiness rehearsal passed before browser ref was required.",
+            restart_simulated=True,
+            accepted_event_id=claim_event["id"],
+            self_scaffold_reviewed=True,
+            self_scaffold_review_event_id=review_event["id"],
+            self_scaffold_reviewed_change_count=1,
+            post_review_handoff_goal_preserved=True,
+            post_review_handoff_next_action_preserved=True,
+            post_review_resume_prompt_goal_preserved=True,
+            post_review_resume_prompt_next_action_preserved=True,
+            replay_attached=True,
+            handoff_attached=True,
+            steps=[
+                ReadinessRehearsalStep(
+                    id="self_scaffold_review",
+                    status="passed",
+                    summary="Self-scaffold review was accepted.",
+                    event_id=review_event["id"],
+                    event_kind="operator_action_reviewed",
+                ),
+                ReadinessRehearsalStep(
+                    id="post_review_handoff_alignment",
+                    status="passed",
+                    summary="Post-review handoff preserved goal and next action.",
+                    evidence=["resume_prompt_next_action=True"],
+                ),
+                ReadinessRehearsalStep(
+                    id="accepted_claim",
+                    status="passed",
+                    summary="Readiness claim was accepted.",
+                    event_id=claim_event["id"],
+                    event_kind="readiness_claim",
+                ),
+            ],
+        )
+        engine_one.store.update_run(created.id, status="queued", state=created.state)
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        source_ref_items = [item for item in queue["items"] if item["reason"] == "readiness_source_refs"]
+
+        assert report["readiness_source_ref_attention_count"] == 1
+        assert entry["readiness_source_refs_requires_attention"] is True
+        assert entry["readiness_source_refs_missing_labels"] == ["browser"]
+        assert entry["readiness_source_refs_count"] == 1
+        assert entry["readiness_source_refs_labels"] == ["web"]
+        assert entry["readiness_source_ref_preview_status"] == "missing_proof_refs"
+        assert entry["readiness_source_ref_preview_missing_evidence_labels"] == ["browser"]
+        assert entry["readiness_source_ref_preview_missing_proof_labels"] == ["browser"]
+        assert entry["readiness_source_ref_preview_source_labels"] == ["web"]
+        assert entry["readiness_source_ref_preview_proof_labels"] == ["web"]
+        assert entry["readiness_source_ref_preview_proof_count"] == 1
+        assert entry["readiness_source_ref_preview"]["status"] == "missing_proof_refs"
+        assert "readiness_source_refs" in entry["operator_attention_reasons"]
+        assert queue["readiness_source_ref_count"] == 1
+        assert source_ref_items
+        assert source_ref_items[0]["ui_target"] == "readiness_source_refs"
+        assert source_ref_items[0]["endpoint"] == f"/api/runs/{created.id}/readiness-source-refs/refresh"
+        assert source_ref_items[0]["method"] == "POST"
+        assert "preview_status=missing_proof_refs" in source_ref_items[0]["details"]
+        assert "missing_evidence=browser" in source_ref_items[0]["details"]
+        assert "missing_proof=browser" in source_ref_items[0]["details"]
+        assert "missing=browser" in source_ref_items[0]["details"]
+        assert "proof_source_refs=1" in source_ref_items[0]["details"]
+        assert "preview_proof_refs=1" in source_ref_items[0]["details"]
+
+        preview = engine_two.get_readiness_source_ref_preview(created.id)
+        assert preview["status"] == "missing_proof_refs"
+        assert preview["source_visible_labels"] == ["browser", "web"]
+        assert preview["source_evidence_labels"] == ["web"]
+        assert preview["proof_ref_labels"] == ["web"]
+        assert preview["missing_source_evidence_labels"] == ["browser"]
+        assert preview["missing_proof_ref_labels"] == ["browser"]
+        browser_row = next(item for item in preview["labels"] if item["label"] == "browser")
+        assert browser_row["missing_from_source_evidence"] is True
+        assert browser_row["missing_from_proof_history"] is True
+        assert browser_row["proof_ref_count"] == 0
+
+        refreshed_input = engine_two.store.get_run(created.id)
+        refreshed_input.state.desktop_snapshots.append(
+            DesktopSnapshot(
+                id="browser-source-ref-now-present",
+                title="Browser source ref proof",
+                timestamp="2026-06-28T10:02:00+00:00",
+                path=str(tmp_path / "browser-source-ref.png"),
+                summary="Browser source ref now exists for readiness proof history.",
+            )
+        )
+        engine_two.store.update_run(refreshed_input.id, status="queued", state=refreshed_input.state)
+        dispatched = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=source_ref_items[0]["id"], decision="dispatch", confirmed=True)
+        )
+        refreshed = engine_two.store.get_run(created.id)
+
+        assert dispatched.status == "dispatched"
+        assert dispatched.action_taken == "readiness_source_refs_refresh"
+        assert refreshed.state.readiness_proof_history.source_evidence_ref_count == 2
+        assert refreshed.state.readiness_completion.source_visible_missing_ref_labels == []
+        assert refreshed.state.handoff_summary.readiness_proof_history.source_evidence_ref_count == 2
+        assert refreshed.state.handoff_summary.readiness_completion.source_visible_missing_ref_labels == []
+        assert refreshed.state.readiness_source_ref_preview.status == "ready"
+        assert refreshed.state.readiness_source_ref_preview.proof_ref_count == 2
+        assert refreshed.state.handoff_summary.readiness_source_ref_preview.status == "ready"
+        prompt, snapshot = engine_two.context_compiler.compile(
+            refreshed,
+            refreshed.state,
+            MemoryContext(hits=[], warnings=[]),
+            engine_two.store.list_events(created.id, limit=5),
+        )
+        assert "readiness_source_ref_preview" in snapshot.sections
+        assert "Readiness source refs: ready" in prompt
+        assert "missing_proof=none" in prompt
+        assert dispatched.queue.readiness_source_ref_count == 0
+        assert any(event["kind"] == "readiness_source_refs_refreshed" for event in engine_two.store.list_events(created.id))
+        refreshed_preview = engine_two.get_readiness_source_ref_preview(created.id)
+        assert refreshed_preview["status"] == "ready"
+        assert refreshed_preview["source_evidence_labels"] == ["browser", "web"]
+        assert refreshed_preview["proof_ref_labels"] == ["browser", "web"]
+        assert refreshed_preview["missing_source_evidence_labels"] == []
+        assert refreshed_preview["missing_proof_ref_labels"] == []
+        assert refreshed_preview["proof_ref_count"] == 2
+
+    asyncio.run(run())
 def test_supervisor_auto_resumes_safe_queued_run_when_enabled(tmp_path: Path) -> None:
     async def run() -> None:
         engine_one = make_engine(tmp_path)
         created = engine_one.store.create_run("Auto resume me", "Auto resume", str(tmp_path), [])
+        created.state.next_step = "Finish the queued run from a valid checkpoint."
+        created.state.handoff_summary = engine_one._make_handoff(created, created.state)
+        engine_one.memory.append_run_started(created)
+        engine_one.memory.append_checkpoint(created, created.state, "queued")
         engine_one.store.update_run(created.id, status="queued", state=created.state)
 
         engine_two = make_engine(tmp_path, auto_resume=True, auto_resume_max_runs=1)
@@ -2841,6 +5585,64 @@ def test_supervisor_auto_resumes_safe_queued_run_when_enabled(tmp_path: Path) ->
 
     asyncio.run(run())
 
+
+def test_supervisor_auto_resume_requires_handoff_action_context(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run(
+            "Improve AgentOrinth auto resume action context safety",
+            "Thin action context auto resume",
+            str(tmp_path),
+            [],
+        )
+        created.state.next_step = "Finish the queued run from compact handoff evidence."
+        created.state.handoff_summary.original_goal = created.goal
+        created.state.handoff_summary.current_objective = created.state.goal
+        created.state.handoff_summary.next_action = created.state.next_step
+        created.state.handoff_summary.resume_prompt = (
+            f"Resume AgentOrinth run {created.id}. Read Obsidian first, preserve original goal: {created.goal}. "
+            "Do not reload raw logs; use this compact handoff. Next action: finish the queued run from compact evidence."
+        )
+        engine_one.memory.append_run_started(created)
+        engine_one.memory.append_checkpoint(created, created.state, "queued")
+        engine_one.store.update_run(created.id, status="queued", state=created.state)
+
+        engine_two = make_engine(tmp_path, auto_resume=True, auto_resume_max_runs=1)
+        report = await engine_two.recover_stale_runs()
+        recovered = engine_two.store.get_run(created.id)
+        run_entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+
+        assert report["auto_resumed"] == 0
+        assert report["recovered"] == 1
+        assert run_entry["action"] == "paused_for_resume"
+        assert run_entry["ornith_preflight_requires_attention"] is True
+        assert "ornith_preflight" in run_entry["operator_attention_reasons"]
+        assert "Handoff action context is warn" in run_entry["auto_resume_reason"]
+        assert recovered.status == "paused"
+
+    asyncio.run(run())
+def test_supervisor_auto_resume_requires_checkpoint_quality(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run("Improve AgentOrinth auto resume checkpoint safety", "Missing checkpoint auto resume", str(tmp_path), [])
+        created.state.next_step = "Continue only after Obsidian checkpoint is valid."
+        created.state.handoff_summary = engine_one._make_handoff(created, created.state)
+        engine_one.store.update_run(created.id, status="queued", state=created.state)
+
+        engine_two = make_engine(tmp_path, auto_resume=True, auto_resume_max_runs=1)
+        report = await engine_two.recover_stale_runs()
+        recovered = engine_two.store.get_run(created.id)
+        run_entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+
+        assert report["auto_resumed"] == 0
+        assert report["recovered"] == 1
+        assert run_entry["action"] == "paused_for_resume"
+        assert run_entry["checkpoint_quality_requires_attention"] is True
+        assert "checkpoint_quality" in run_entry["operator_attention_reasons"]
+        assert "Checkpoint quality is needs_checkpoint" in run_entry["auto_resume_reason"]
+        assert recovered.status == "paused"
+
+    asyncio.run(run())
 
 def test_supervisor_auto_resume_pauses_blocked_queued_run(tmp_path: Path) -> None:
     async def run() -> None:
@@ -2874,6 +5676,11 @@ def test_ornith_resume_preflight_reports_fresh_smoke_and_health(tmp_path: Path) 
     fresh_smoke_time = engine._iso_datetime(engine._utc_datetime() + timedelta(seconds=60))
     seed_passed_rehearsal(engine, tmp_path, generated_at=fresh_smoke_time)
     seed_passed_dispatch_restart_smoke(engine, tmp_path, generated_at=fresh_smoke_time)
+    created.state.next_step = "Resume from a valid checkpoint after preflight."
+    created.state.handoff_summary = engine._make_handoff(created, created.state)
+    engine.memory.append_run_started(created)
+    engine.memory.append_checkpoint(created, created.state, "paused")
+    engine.store.update_run(created.id, state=created.state)
 
     report = engine.get_ornith_launch_checklist(created.id)
     items = {item["id"]: item for item in report["items"]}
@@ -2903,8 +5710,37 @@ def test_ornith_preflight_enters_handoff_and_compact_context(tmp_path: Path) -> 
     assert handoff.ornith_preflight.run_id == created.id
     assert created.state.ornith_preflight.run_id == created.id
     assert items["handoff_anchor"].status == "pass"
+    assert items["handoff_action_context"].status == "pass"
+    assert "task_transitions=1" in items["handoff_action_context"].evidence
     assert "ornith_preflight" in snapshot.sections
     assert "Ornith preflight:" in prompt
+
+
+def test_ornith_preflight_warns_when_handoff_action_context_is_thin(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    created = engine.store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Thin handoff action context",
+        str(tmp_path),
+        [],
+    )
+    created.state.handoff_summary.original_goal = created.goal
+    created.state.handoff_summary.current_objective = created.state.goal
+    created.state.handoff_summary.resume_prompt = (
+        f"Resume AgentOrinth run {created.id}. Read Obsidian first, preserve original goal: {created.goal}. "
+        "Do not reload raw logs; use this compact handoff. Next action: consult Obsidian memory."
+    )
+    engine.store.update_run(created.id, state=created.state)
+
+    report = engine.get_ornith_launch_checklist(created.id)
+    items = {item["id"]: item for item in report["items"]}
+    item = items["handoff_action_context"]
+
+    assert item["status"] == "warn"
+    assert "restart_ledger" in item["summary"]
+    assert "generated=False" in item["evidence"]
+    assert item["next_action"].startswith("Refresh/checkpoint the run handoff")
+
 
 def test_run_health_marks_missing_dispatch_restart_smoke_attention(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
@@ -2965,6 +5801,15 @@ def test_supervisor_reports_missing_readiness_smoke_for_harness_runs(tmp_path: P
         assert report["operator_attention_count"] == 1
         assert entry["readiness_smoke_required"] is True
         assert entry["readiness_smoke_status"] == "missing"
+        assert entry["readiness_smoke_proof_status"] == "missing"
+        assert entry["readiness_smoke_self_scaffold_reviewed"] is False
+        assert entry["readiness_smoke_post_review_handoff_preserved"] is False
+        assert entry["readiness_proof_history_status"] == "missing"
+        assert entry["readiness_proof_history_requires_attention"] is False
+        assert entry["readiness_proof_history_self_scaffold_review_count"] == 0
+        assert "entries=0" in entry["readiness_proof_history_detail"]
+        assert report["readiness_proof_history_attention_count"] == 0
+        assert "latest=none" in entry["readiness_smoke_proof_detail"]
         assert entry["readiness_smoke_requires_attention"] is True
         assert "smoke" in entry["readiness_smoke_action"]
         assert entry["operator_attention_required"] is True
@@ -3001,6 +5846,17 @@ def test_supervisor_reports_stale_readiness_smoke_for_newer_harness_runs(tmp_pat
         assert report["readiness_smoke_attention_count"] == 1
         assert report["operator_attention_count"] == 1
         assert stale_entry["readiness_smoke_status"] == "stale"
+        assert stale_entry["readiness_smoke_proof_status"] == "stale"
+        assert stale_entry["readiness_smoke_self_scaffold_reviewed"] is True
+        assert stale_entry["readiness_smoke_post_review_handoff_preserved"] is True
+        assert stale_entry["readiness_proof_history_status"] == "stale"
+        assert stale_entry["readiness_proof_history_requires_attention"] is False
+        assert stale_entry["readiness_proof_history_self_scaffold_review_count"] == 1
+        assert stale_entry["readiness_proof_history_post_review_handoff_count"] == 1
+        assert stale_entry["readiness_proof_history_resume_prompt_preservation_count"] == 1
+        assert "source=latest_readiness_smoke" in stale_entry["readiness_proof_history_detail"]
+        assert report["readiness_proof_history_attention_count"] == 0
+        assert "post-review=yes" in stale_entry["readiness_smoke_proof_detail"]
         assert stale_entry["readiness_smoke_requires_attention"] is True
         assert stale_entry["readiness_smoke_latest_run_id"]
         assert "readiness_smoke" in stale_entry["operator_attention_reasons"]
@@ -3027,18 +5883,329 @@ def test_supervisor_surfaces_paused_smoke_attention_runs(tmp_path: Path) -> None
         report = await engine_two.recover_stale_runs()
 
         assert report["readiness_smoke_attention_count"] == 1
+        assert report["checkpoint_quality_attention_count"] == 1
         assert report["operator_attention_count"] == 1
-        assert report["operator_attention_watch_count"] == 1
+        assert report["operator_attention_blocked_count"] == 1
+        assert report["operator_attention_watch_count"] == 0
         assert [item["run_id"] for item in report["runs"]] == [harness.id]
         assert report["runs"][0]["action"] == "operator_attention"
         assert report["runs"][0]["operator_attention_required"] is True
+        assert report["runs"][0]["operator_attention_severity"] == "blocked"
         assert "readiness_smoke" in report["runs"][0]["operator_attention_reasons"]
+        assert "checkpoint_quality" in report["runs"][0]["operator_attention_reasons"]
         assert "ornith_preflight" in report["runs"][0]["operator_attention_reasons"]
+        assert report["runs"][0]["checkpoint_quality_requires_attention"] is True
         assert report["runs"][0]["ornith_preflight_requires_attention"] is True
-        assert report["runs"][0]["supervisor_priority"] >= 75
+        assert report["runs"][0]["supervisor_priority"] >= 90
 
     asyncio.run(run())
 
+
+
+def test_operator_action_queue_filters_proof_review_items(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+
+    def entry(run_id: str, reason: str, **extra) -> dict:
+        base = {
+            "run_id": run_id,
+            "title": run_id,
+            "status": "paused",
+            "action": "operator_attention",
+            "operator_attention_required": True,
+            "operator_attention_reasons": [reason],
+            "operator_attention_action": f"Review {reason}.",
+            "operator_attention_severity": "watch",
+            "supervisor_priority": 10,
+        }
+        base.update(extra)
+        return base
+
+    engine.supervisor_report = {
+        "ran_at": "2026-06-28T10:30:00+00:00",
+        "runs": [
+            entry(
+                "proof-history-run",
+                "readiness_proof_history",
+                readiness_proof_history_action="Inspect proof history.",
+                readiness_proof_history_status="partial",
+                readiness_proof_history_detail="missing post-review handoff proof",
+                readiness_proof_history_self_scaffold_review_count=1,
+                readiness_proof_history_post_review_handoff_count=0,
+            ),
+            entry(
+                "source-ref-run",
+                "readiness_source_refs",
+                readiness_source_refs_action="Refresh source refs.",
+                readiness_source_refs_missing_labels=["browser"],
+                readiness_source_refs_labels=["web"],
+                readiness_source_refs_count=1,
+                readiness_proof_history_status="complete",
+            ),
+            entry(
+                "source-evidence-run",
+                "source_evidence",
+                source_evidence_action="Capture source evidence.",
+                source_evidence={"missing_labels": ["web"], "latest_evidence": "none"},
+            ),
+            entry(
+                "desktop-proof-run",
+                "desktop_effect_proof",
+                desktop_effect_proof_action="Capture desktop screenshot proof.",
+                desktop_effect_proof_after_tool="desktop_click",
+                desktop_effect_proof_tool="desktop_screenshot",
+                desktop_effect_proof_detail="desktop_effect_check_required after desktop_click",
+            ),
+            entry("approval-run", "approval"),
+        ],
+    }
+
+    all_queue = engine.get_operator_action_queue(limit=10)
+    filtered = engine.get_operator_action_queue(limit=10, queue_filter="proof_reviews")
+    limited = engine.get_operator_action_queue(limit=2, queue_filter="proof_reviews")
+
+    assert all_queue.total_count == 5
+    assert filtered.total_count == all_queue.total_count
+    assert filtered.readiness_proof_history_count == 1
+    assert filtered.readiness_source_ref_count == 1
+    assert {item.reason for item in filtered.items} == {
+        "readiness_proof_history",
+        "readiness_source_refs",
+        "source_evidence",
+        "desktop_effect_proof",
+    }
+    assert all(item.reason != "approval" for item in filtered.items)
+    assert len(limited.items) == 2
+    assert all(item.reason in {"readiness_proof_history", "readiness_source_refs", "source_evidence", "desktop_effect_proof"} for item in limited.items)
+
+def test_supervisor_queues_partial_readiness_proof_history_attention(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        smoke = engine_one.store.create_run(
+            "Readiness smoke partial proof",
+            "Readiness smoke partial proof",
+            str(tmp_path),
+            [],
+            tool_profile="ornith_rehearsal",
+        )
+        report = ReadinessRehearsalReport(
+            run_id=smoke.id,
+            generated_at="2026-06-27T08:00:00+00:00",
+            status="passed",
+            summary="Seeded readiness rehearsal has partial proof history.",
+            rehearsal_workspace=str(tmp_path),
+            restart_simulated=True,
+            refused_event_id=1,
+            accepted_event_id=3,
+            completed_event_id=4,
+            self_scaffold_reviewed=True,
+            self_scaffold_review_event_id=2,
+            self_scaffold_reviewed_change_count=1,
+            post_review_handoff_goal_preserved=False,
+            post_review_handoff_next_action_preserved=False,
+            post_review_resume_prompt_goal_preserved=False,
+            post_review_resume_prompt_next_action_preserved=False,
+            compact_context_tokens=1200,
+            replay_attached=True,
+            handoff_attached=True,
+            steps=[
+                ReadinessRehearsalStep(
+                    id="self_scaffold_review",
+                    status="passed",
+                    summary="Self-scaffold review was accepted.",
+                    evidence=["reviewed=1"],
+                    event_id=2,
+                    event_kind="operator_action_reviewed",
+                ),
+                ReadinessRehearsalStep(
+                    id="accepted_claim",
+                    status="passed",
+                    summary="Readiness claim was accepted.",
+                    evidence=["claim_event=3"],
+                    event_id=3,
+                    event_kind="readiness_claim",
+                ),
+            ],
+        )
+        smoke.state.readiness_rehearsal = report
+        smoke.state.handoff_summary.readiness_rehearsal = report
+        engine_one.store.update_run(smoke.id, status="completed", state=smoke.state)
+        created = engine_one.store.create_run(
+            "Improve AgentOrinth into a Codex-like long coding harness",
+            "Harness partial proof history",
+            str(tmp_path),
+            [],
+        )
+        engine_one.store.update_run(created.id, status="running", state=created.state)
+
+        engine_two = make_engine(tmp_path)
+        supervisor = await engine_two.recover_stale_runs()
+        entry = next(item for item in supervisor["runs"] if item["run_id"] == created.id)
+        queue = supervisor["operator_action_queue"]
+        proof_items = [item for item in queue["items"] if item["reason"] == "readiness_proof_history"]
+
+        assert entry["readiness_smoke_status"] == "incomplete"
+        assert entry["readiness_proof_history_status"] == "partial"
+        assert entry["readiness_proof_history_requires_attention"] is True
+        assert entry["readiness_proof_history_self_scaffold_review_count"] == 1
+        assert entry["readiness_proof_history_post_review_handoff_count"] == 0
+        assert "readiness_proof_history" in entry["operator_attention_reasons"]
+        assert supervisor["readiness_proof_history_attention_count"] == 1
+        assert queue["readiness_proof_history_count"] == 1
+        assert proof_items
+        assert proof_items[0]["endpoint"] == f"/api/runs/{created.id}/readiness-proof-history"
+        assert proof_items[0]["method"] == "GET"
+        assert proof_items[0]["ui_target"] == "readiness_proof_history"
+        assert any("post_review_handoff=0" in detail for detail in proof_items[0]["details"])
+
+    asyncio.run(run())
+
+def test_supervisor_queues_self_scaffold_review_attention(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path, auto_resume=True)
+        created = engine_one.store.create_run(
+            "Let the local model reshape this run safely",
+            "Self scaffold attention",
+            str(tmp_path),
+            [],
+            tool_profile="ornith_self_scaffold",
+        )
+        created.state.task_graph = [
+            TaskNode(
+                id="task-self-scaffold",
+                title="Review Ornith self-scaffold guard",
+                kind="decision",
+                status="in_progress",
+            )
+        ]
+        created.state.current_task_id = "task-self-scaffold"
+        created.state.action_context.current_task_id = "task-self-scaffold"
+        created.state.action_context.model_guard_ledger.append(
+            "current_task_mismatch guarded run_tests for task-self-scaffold before broad autonomy"
+        )
+        engine_one.store.update_run(created.id, status="queued", state=created.state)
+
+        engine_two = make_engine(tmp_path, auto_resume=True)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        scaffold_items = [item for item in queue["items"] if item["reason"] == "self_scaffold"]
+        recovered = engine_two.store.get_run(created.id)
+
+        assert report["auto_resumed"] == 0
+        assert report["recovered"] == 1
+        assert report["self_scaffold_attention_count"] == 1
+        assert recovered.status == "paused"
+        assert entry["self_scaffold_requires_attention"] is True
+        assert entry["self_scaffold"]["status"] == "needs_review"
+        assert entry["self_scaffold"]["guard_count"] == 1
+        assert entry["auto_resume_reason"] == entry["self_scaffold_action"]
+        assert "self_scaffold" in entry["operator_attention_reasons"]
+        assert entry["operator_attention_severity"] == "watch"
+        assert queue["self_scaffold_count"] == 1
+        assert scaffold_items
+        item = scaffold_items[0]
+        assert item["ui_target"] == "self_scaffold"
+        assert item["endpoint"] == f"/api/runs/{created.id}/replay"
+        assert any("guards=1" == detail for detail in item["details"])
+
+        reviewed = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(item_id=item["id"], decision="dispatch", confirmed=True)
+        )
+        assert reviewed.status == "reviewed"
+        assert reviewed.action_taken == "self_scaffold_review"
+        assert reviewed.event_kind == "operator_action_reviewed"
+        assert reviewed.queue.self_scaffold_count == 0
+        events = engine_two.store.list_events(created.id)
+        assert events[-1]["kind"] == "operator_action_reviewed"
+        assert events[-1]["data"]["operator_action"]["ui_target"] == "self_scaffold"
+        guard_change_id = next(
+            change["id"]
+            for change in entry["self_scaffold"]["changes"]
+            if change["kind"] == "model_guard"
+        )
+        review_payload = events[-1]["data"]["self_scaffold_review"]
+        assert review_payload["reviewed_change_count"] == 1
+        assert review_payload["remaining_goal_review"] is False
+        assert review_payload["reviewed_change_ids"] == [guard_change_id]
+        stored = engine_two.store.get_run(created.id)
+        assert stored.state.self_scaffold.status == "observed"
+        assert stored.state.self_scaffold.review_count == 1
+        assert stored.state.self_scaffold.reviewed_change_count == 1
+        assert stored.state.self_scaffold.latest_review_event_id == events[-1]["id"]
+        assert stored.state.self_scaffold_reviews.status == "reviewed"
+        assert stored.state.self_scaffold_reviews.accepted_count == 1
+        assert stored.state.self_scaffold_reviews.latest_event_id == events[-1]["id"]
+        assert stored.state.self_scaffold_reviews.latest_reviewed_change_ids == [guard_change_id]
+        assert stored.state.self_scaffold_rollback_intents.status == "available"
+        assert stored.state.self_scaffold_rollback_intents.steering_count == 1
+        assert stored.state.self_scaffold_rollback_intents.entries[0].mutation_automatic is False
+        assert stored.state.handoff_summary.self_scaffold.status == "observed"
+        assert stored.state.handoff_summary.self_scaffold_reviews.latest_event_id == events[-1]["id"]
+        assert stored.state.handoff_summary.self_scaffold_rollback_intents.steering_count == 1
+
+        refreshed = await engine_two.recover_stale_runs()
+        assert refreshed["self_scaffold_attention_count"] == 0
+        assert refreshed["operator_action_queue"]["self_scaffold_count"] == 0
+
+    asyncio.run(run())
+
+def test_supervisor_surfaces_goal_confirmation_queue_for_goal_updates(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run(
+            "Improve AgentOrinth while preserving Ornith agency",
+            "Goal confirmation queue",
+            str(tmp_path),
+            [],
+        )
+        proposed_goal = (
+            "Improve AgentOrinth with Ornith-preserving self-scaffolding and explicit user-confirmed goal evolution"
+        )
+        await engine_one.propose_goal(created.id, proposed_goal, "Ornith proposed a safer long-run goal shape.")
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+        queue = report["operator_action_queue"]
+        goal_items = [item for item in queue["items"] if item["reason"] == "goal_confirmation"]
+
+        assert report["goal_confirmation_attention_count"] == 1
+        assert report["pending_approval_count"] == 1
+        assert entry["goal_confirmation_requires_attention"] is True
+        assert entry["goal_confirmation_proposed_goal"] == proposed_goal
+        assert entry["goal_confirmation_approval_count"] == 1
+        assert "goal_confirmation" in entry["operator_attention_reasons"]
+        assert entry["operator_attention_severity"] == "blocked"
+        assert queue["goal_confirmation_count"] == 1
+        assert queue["approval_count"] == 1
+        assert goal_items
+        assert goal_items[0]["approval_kind"] == "goal_update"
+        assert goal_items[0]["ui_target"] == "approval"
+        assert proposed_goal[:80] in goal_items[0]["details"][0]
+
+    asyncio.run(run())
+
+def test_supervisor_surfaces_action_readiness_gate_for_runs(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine_one = make_engine(tmp_path)
+        created = engine_one.store.create_run("Inspect action gate", "Action gate", str(tmp_path), [])
+        created.state.milestone = "act"
+        created.state.blockers.append("Needs user decision.")
+        engine_one.store.update_run(created.id, status="paused", state=created.state)
+
+        engine_two = make_engine(tmp_path)
+        report = await engine_two.recover_stale_runs()
+        entry = next(item for item in report["runs"] if item["run_id"] == created.id)
+
+        assert report["action_readiness_attention_count"] == 1
+        assert report["action_readiness_blocked_count"] == 1
+        assert entry["action_readiness_status"] == "blocked"
+        assert entry["action_readiness_ready"] is False
+        assert entry["action_readiness"]["recommended_action"] == "Resolve blockers or ask the user before acting."
+        assert entry["action_readiness_action"] == "Resolve blockers or ask the user before acting."
+        assert entry["action_readiness_decisions"]["decision_count"] == 0
+
+    asyncio.run(run())
 
 def test_supervisor_operator_attention_rolls_up_approvals_recovery_and_blockers(tmp_path: Path) -> None:
     async def run() -> None:
@@ -3075,6 +6242,7 @@ def test_supervisor_operator_attention_rolls_up_approvals_recovery_and_blockers(
         assert queue["total_count"] == 3
         assert queue["blocked_count"] == 3
         assert queue["approval_count"] == 1
+        assert queue["promotion_approval_count"] == 0
         assert queue["recovery_count"] == 1
         assert queue["blocker_count"] == 1
         assert queue_reasons == {"approval", "recovery", "blocker"}
@@ -3082,9 +6250,36 @@ def test_supervisor_operator_attention_rolls_up_approvals_recovery_and_blockers(
         recovery_item = next(item for item in queue["items"] if item["reason"] == "recovery")
         blocker_item = next(item for item in queue["items"] if item["reason"] == "blocker")
         assert approval_item["approval_id"] > 0
+        assert approval_item["promotion_gate"] is False
         assert approval_item["endpoint"] == f"/api/runs/{approval_run.id}/approvals"
         assert recovery_item["endpoint"] == f"/api/runs/{recovery_run.id}/recovery/resume"
         assert blocker_item["ui_target"] == "steer"
+        initial_reviews = engine_two.get_approval_reviews(approval_run.id, status="pending")
+        assert initial_reviews[0]["reviewed"] is False
+        assert initial_reviews[0]["review_count"] == 0
+        assert initial_reviews[0]["latest_review_event_id"] == 0
+
+        reviewed = await engine_two.dispatch_operator_action(
+            OperatorActionDispatchRequest(
+                item_id=approval_item["id"],
+                decision="open",
+                confirmed=False,
+            )
+        )
+        assert reviewed.status == "reviewed"
+        assert reviewed.action_taken == "open"
+        assert reviewed.event_kind == "operator_action_reviewed"
+        assert reviewed.queue.approval_count == 1
+        assert engine_two.store.list_approvals(approval_run.id, status="pending")
+        reviewed_reviews = engine_two.get_approval_reviews(approval_run.id, status="pending")
+        assert reviewed_reviews[0]["reviewed"] is True
+        assert reviewed_reviews[0]["review_count"] == 1
+        assert reviewed_reviews[0]["latest_review_event_id"] > 0
+        assert reviewed_reviews[0]["latest_reviewed_at"]
+        reviewed_ledger = engine_two.get_operator_dispatches(approval_run.id)
+        assert reviewed_ledger["unresolved_approval_history_count"] == 1
+        assert reviewed_ledger["unresolved_approval_histories"][0]["approval_id"] == approval_item["approval_id"]
+        assert reviewed_ledger["unresolved_approval_histories"][0]["latest_status"] == "reviewed"
 
         unconfirmed = await engine_two.dispatch_operator_action(
             OperatorActionDispatchRequest(
@@ -3107,15 +6302,38 @@ def test_supervisor_operator_attention_rolls_up_approvals_recovery_and_blockers(
         assert rejected.action_taken == "reject"
         assert rejected.queue.approval_count == 0
         assert not engine_two.store.list_approvals(approval_run.id, status="pending")
+        rejected_reviews = engine_two.get_approval_reviews(approval_run.id, status="rejected")
+        assert rejected_reviews[0]["reviewed"] is True
+        assert rejected_reviews[0]["review_count"] == 1
         event_kinds = [event["kind"] for event in engine_two.store.list_events(approval_run.id)]
+        assert "operator_action_reviewed" in event_kinds
         assert "operator_action_confirmation_required" in event_kinds
         assert "operator_action_dispatched" in event_kinds
         ledger = engine_two.get_operator_dispatches(approval_run.id)
-        assert ledger["total_count"] == 2
+        assert ledger["total_count"] == 3
+        assert ledger["reviewed_count"] == 1
         assert ledger["confirmation_required_count"] == 1
         assert ledger["dispatched_count"] == 1
-        assert ledger["entries"][0]["status"] == "dispatched"
+        assert ledger["approval_history_count"] == 1
+        assert ledger["unresolved_approval_history_count"] == 0
+        assert ledger["unresolved_approval_histories"] == []
+        history = ledger["approval_histories"][0]
+        assert history["approval_id"] == approval_item["approval_id"]
+        assert history["event_count"] == 3
+        assert history["reviewed_count"] == 1
+        assert history["confirmation_required_count"] == 1
+        assert history["dispatched_count"] == 1
+        assert history["latest_status"] == "dispatched"
+        assert history["latest_event_id"] == ledger["entries"][0]["event_id"]
+        assert history["sequence"] == [
+            f"reviewed#{ledger['entries'][2]['event_id']}:open",
+            f"confirmation_required#{ledger['entries'][1]['event_id']}:reject",
+            f"dispatched#{ledger['entries'][0]['event_id']}:reject",
+        ]
+        assert [entry["status"] for entry in ledger["entries"]] == ["dispatched", "confirmation_required", "reviewed"]
         assert ledger["entries"][0]["approval_id"] == approval_item["approval_id"]
+        assert ledger["entries"][2]["decision"] == "open"
+        assert ledger["entries"][2]["approval_id"] == approval_item["approval_id"]
 
     asyncio.run(run())
 
@@ -3125,8 +6343,12 @@ def test_supervisor_auto_resume_respects_max_runs(tmp_path: Path) -> None:
         engine_one = make_engine(tmp_path)
         first = engine_one.store.create_run("Auto resume one", "Auto one", str(tmp_path), [])
         second = engine_one.store.create_run("Auto resume two", "Auto two", str(tmp_path), [])
-        engine_one.store.update_run(first.id, status="queued", state=first.state)
-        engine_one.store.update_run(second.id, status="queued", state=second.state)
+        for created in (first, second):
+            created.state.next_step = "Finish the queued run from a valid checkpoint."
+            created.state.handoff_summary = engine_one._make_handoff(created, created.state)
+            engine_one.memory.append_run_started(created)
+            engine_one.memory.append_checkpoint(created, created.state, "queued")
+            engine_one.store.update_run(created.id, status="queued", state=created.state)
 
         engine_two = make_engine(tmp_path, auto_resume=True, auto_resume_max_runs=1)
         report = await engine_two.recover_stale_runs()
@@ -3145,11 +6367,27 @@ def test_startup_recovery_preserves_pending_workspace_promotion(tmp_path: Path) 
     async def run() -> None:
         engine_one = make_engine(tmp_path)
         created = engine_one.store.create_run("Preserve approval", "Promotion waiting", str(tmp_path), [])
-        engine_one.store.create_approval(
+        approval = engine_one.store.create_approval(
             created.id,
             "workspace_promote",
             {"tool_name": "workspace_promote", "args": {"source_path": str(tmp_path)}},
             "Promote workspace changes.",
+        )
+        review_event = engine_one.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed workspace promotion approval.",
+            {
+                "operator_action": {
+                    "id": f"{created.id}:approval:workspace_promote",
+                    "run_id": created.id,
+                    "title": created.title,
+                    "reason": "approval",
+                    "action": "Review pending workspace promotion approval.",
+                    "ui_target": "approval",
+                    "approval_id": approval["id"],
+                },
+            },
         )
         engine_one.store.update_run(created.id, status="waiting_approval", state=created.state)
 
@@ -3160,7 +6398,16 @@ def test_startup_recovery_preserves_pending_workspace_promotion(tmp_path: Path) 
         assert report["waiting_approval"] == 1
         assert recovered.status == "waiting_approval"
         assert recovered.state.next_step == "Wait for pending dashboard approval."
-        assert "workspace_promote:pending" in recovered.state.handoff_summary.approvals
+        assert recovered.state.handoff_summary.approvals == [
+            f"workspace_promote:pending:reviewed:x1:event#{review_event['id']}"
+        ]
+        assert len(recovered.state.handoff_summary.approval_reviews) == 1
+        approval_review = recovered.state.handoff_summary.approval_reviews[0]
+        assert approval_review.action_kind == "workspace_promote"
+        assert approval_review.reviewed is True
+        assert approval_review.review_count == 1
+        assert approval_review.latest_review_event_id == review_event["id"]
+        assert approval_review.high_risk is True
 
     asyncio.run(run())
 
@@ -3187,6 +6434,17 @@ def test_workspace_promotion_request_creates_approval(tmp_path: Path) -> None:
                 summary="Isolated copy.",
             ),
         )
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-promotion-test",
+                name="shell",
+                args={"command": "python -m pytest backend/tests/test_workspace.py -q"},
+                ok=True,
+                summary="pytest passed before source promotion.",
+                created_at="2026-06-27T08:05:00+00:00",
+            )
+        )
+        engine.store.update_run(created.id, status="paused", state=created.state)
 
         updated = await engine.request_workspace_promotion(created.id)
         approvals = engine.store.list_approvals(created.id, status="pending")
@@ -3196,6 +6454,30 @@ def test_workspace_promotion_request_creates_approval(tmp_path: Path) -> None:
         assert approvals[0]["payload"]["args"]["source_path"] == str(source)
         assert approvals[0]["payload"]["preview"]["summary"] == "1 workspace change(s): 0 added, 1 modified, 0 deleted."
         assert approvals[0]["payload"]["preview"]["files"][0]["path"] == "README.md"
+
+        review_event = engine.store.append_event(
+            created.id,
+            "operator_action_reviewed",
+            "Operator reviewed workspace promotion approval.",
+            {
+                "decision": "open",
+                "operator_action": {
+                    "id": f"{created.id}:approval:workspace_promote",
+                    "run_id": created.id,
+                    "title": created.title,
+                    "reason": "approval",
+                    "action": "Review pending workspace promotion approval.",
+                    "ui_target": "approval",
+                    "approval_id": approvals[0]["id"],
+                },
+            },
+        )
+        audit = engine.get_promotion_audit(created.id)
+        expected = f"approval#{approvals[0]['id']}:latest=reviewed:events=1:seq=reviewed#{review_event['id']}:open"
+
+        assert audit["unresolved_approval_history_count"] == 1
+        assert audit["unresolved_approval_histories"] == [expected]
+        assert any(issue["id"] == "promotion_approval_history_unresolved" for issue in audit["issues"])
 
     asyncio.run(run())
 
@@ -3222,6 +6504,17 @@ def test_workspace_promotion_request_reuses_pending_approval(tmp_path: Path) -> 
                 summary="Isolated copy.",
             ),
         )
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-promotion-reuse-test",
+                name="shell",
+                args={"command": "python -m pytest backend/tests/test_workspace.py -q"},
+                ok=True,
+                summary="pytest passed before source promotion.",
+                created_at="2026-06-27T08:05:00+00:00",
+            )
+        )
+        engine.store.update_run(created.id, status="paused", state=created.state)
 
         await engine.request_workspace_promotion(created.id)
         updated = await engine.request_workspace_promotion(created.id)
@@ -3256,6 +6549,17 @@ def test_workspace_promotion_request_without_changes_pauses_without_approval(tmp
                 summary="Isolated copy.",
             ),
         )
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-promotion-test",
+                name="shell",
+                args={"command": "python -m pytest backend/tests/test_workspace.py -q"},
+                ok=True,
+                summary="pytest passed before source promotion.",
+                created_at="2026-06-27T08:05:00+00:00",
+            )
+        )
+        engine.store.update_run(created.id, status="paused", state=created.state)
 
         updated = await engine.request_workspace_promotion(created.id)
 
@@ -3290,6 +6594,18 @@ def test_workspace_promotion_survives_engine_recreation(tmp_path: Path) -> None:
         )
 
         await engine_one.refresh_workspace_diff(created.id)
+        created = engine_one.store.get_run(created.id)
+        created.state.tool_calls.append(
+            ToolCallRecord(
+                id="tool-promotion-test",
+                name="shell",
+                args={"command": "python -m pytest backend/tests/test_workspace.py -q"},
+                ok=True,
+                summary="pytest passed before source promotion.",
+                created_at="2026-06-27T08:05:00+00:00",
+            )
+        )
+        engine_one.store.update_run(created.id, status="paused", state=created.state)
         await engine_one.request_workspace_promotion(created.id)
         approval = engine_one.store.list_approvals(created.id, status="pending")[0]
 
@@ -3304,4 +6620,3 @@ def test_workspace_promotion_survives_engine_recreation(tmp_path: Path) -> None:
         assert restored.state.workspace_diff.total_files == 0
 
     asyncio.run(run())
-

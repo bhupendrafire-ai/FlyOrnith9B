@@ -1,5 +1,7 @@
-﻿from pathlib import Path
+from pathlib import Path
 
+from app.context_compiler import ContextCompiler
+from app.memory import MemoryContext
 from app.persistence import RunStore
 from app.replay import build_replay_bundle
 from app.schemas import (
@@ -7,18 +9,28 @@ from app.schemas import (
     AcceptanceEvidenceRecommendation,
     AcceptanceRecommendationTrace,
     DesktopSnapshot,
+    ContextSnapshot,
     GoalEvolutionDecisionRecord,
     GoalEvolutionReport,
+    GitCheckpointReport,
     ModelInteractionRecord,
     ModelProfileAdaptationProposal,
     OrnithLaunchChecklistReport,
+    PatchApplication,
+    PatchProposal,
     PolicySimulationReport,
     PostActionRetryDecisionRecord,
     PostActionRetryReport,
+    ReadinessRehearsalReport,
+    ReadinessRehearsalStep,
     RecoveryPlan,
     RunLease,
+    TaskNode,
     ToolCallRecord,
     WebSource,
+    WorkspaceDiffFile,
+    WorkspaceDiffSummary,
+    WorkspaceIsolation,
 )
 
 
@@ -54,9 +66,102 @@ def test_replay_bundle_compacts_events_and_approval_previews(tmp_path: Path) -> 
     assert "x" * 200 not in bundle.markdown
     assert bundle.approvals[0].preview_summary == "1 workspace change(s): 0 added, 1 modified, 0 deleted."
     assert bundle.approvals[0].preview_files == ["modified: main.py"]
+    assert bundle.approvals[0].reviewed is False
+    assert bundle.approvals[0].review_count == 0
     assert "# Replay: Replay" in bundle.markdown
+    assert "`unreviewed`" in bundle.markdown
     assert "Resume run" in bundle.markdown
 
+
+def test_replay_bundle_compacts_reviewed_approval_state(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay reviewed approval", "Reviewed approval", str(tmp_path), [])
+    approval = store.create_approval(
+        run.id,
+        "shell",
+        {"command": "python -m pytest"},
+        "Approve shell command.",
+    )
+    review_event = store.append_event(
+        run.id,
+        "operator_action_reviewed",
+        "Operator reviewed approval.",
+        {
+            "decision": "open",
+            "confirmed": False,
+            "operator_action": {
+                "id": f"{run.id}:approval:shell",
+                "run_id": run.id,
+                "title": run.title,
+                "reason": "approval",
+                "action": "Review pending shell approval.",
+                "ui_target": "approval",
+                "approval_id": approval["id"],
+            },
+        },
+    )
+    second_review_event = store.append_event(
+        run.id,
+        "operator_action_reviewed",
+        "Operator reviewed approval again.",
+        {
+            "decision": "open",
+            "confirmed": False,
+            "operator_action": {
+                "id": f"{run.id}:approval:shell:second",
+                "run_id": run.id,
+                "title": run.title,
+                "reason": "approval",
+                "action": "Review pending shell approval again.",
+                "ui_target": "approval",
+                "approval_id": approval["id"],
+            },
+        },
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.approvals[0].reviewed is True
+    assert bundle.approvals[0].review_count == 2
+    assert bundle.approvals[0].latest_review_event_id == second_review_event["id"]
+    assert bundle.approvals[0].latest_reviewed_at == second_review_event["timestamp"]
+    assert bundle.handoff.approval_reviews[0].id == approval["id"]
+    assert bundle.handoff.approval_reviews[0].reviewed is True
+    assert bundle.handoff.approval_reviews[0].review_count == 2
+    assert bundle.handoff.approval_reviews[0].latest_review_event_id == second_review_event["id"]
+    assert bundle.handoff.approval_reviews[0].high_risk is True
+    assert f"reviewed x2 event #{second_review_event['id']}" in bundle.markdown
+
+
+def test_replay_bundle_compacts_legacy_patch_apply_approval_preview(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay patch approval", "Replay patch", str(tmp_path), [])
+    store.create_approval(
+        run.id,
+        "patch_apply",
+        {
+            "tool_name": "patch_apply",
+            "args": {"patch_id": "patch-demo", "diff": "--- a/demo.py\n+++ b/demo.py\n"},
+            "files": ["demo.py"],
+            "summary": "Apply demo patch.",
+        },
+        "Apply patch proposal patch-demo.",
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.approvals[0].preview_summary == "Apply demo patch."
+    assert bundle.approvals[0].preview_files == ["patch: demo.py"]
+    assert "Preview: Apply demo patch." in bundle.markdown
+    assert "patch: demo.py" in bundle.markdown
 
 def test_replay_bundle_includes_operator_dispatch_ledger(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
@@ -92,6 +197,261 @@ def test_replay_bundle_includes_operator_dispatch_ledger(tmp_path: Path) -> None
     assert "## Operator Dispatches" in bundle.markdown
     assert "Operator dispatched recovery resume" in bundle.markdown
 
+
+def test_replay_bundle_groups_operator_approval_history(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay approval history", "Replay approval history", str(tmp_path), [])
+    approval = store.create_approval(run.id, "shell", {"command": "python -m pytest"}, "Approve shell.")
+    action = {
+        "id": f"{run.id}:approval:shell",
+        "run_id": run.id,
+        "title": run.title,
+        "reason": "approval",
+        "action": "Review pending shell approval.",
+        "ui_target": "approval",
+        "approval_id": approval["id"],
+    }
+    first = store.append_event(run.id, "operator_action_reviewed", "Operator reviewed approval.", {"decision": "open", "operator_action": action})
+    second = store.append_event(run.id, "operator_action_confirmation_required", "Operator action requires confirmation.", {"decision": "reject", "operator_action": action})
+    third = store.append_event(run.id, "operator_action_dispatched", "Operator rejected approval.", {"decision": "reject", "confirmed": True, "operator_action": action})
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+    history = bundle.operator_dispatches.approval_histories[0]
+
+    assert history.approval_id == approval["id"]
+    assert history.event_count == 3
+    assert history.reviewed_count == 1
+    assert history.confirmation_required_count == 1
+    assert history.dispatched_count == 1
+    assert history.latest_event_id == third["id"]
+    assert history.sequence == [
+        f"reviewed#{first['id']}:open",
+        f"confirmation_required#{second['id']}:reject",
+        f"dispatched#{third['id']}:reject",
+    ]
+    assert f"Approval #{approval['id']}: events `3`" in bundle.markdown
+    assert "reviewed#" in bundle.markdown
+
+
+def test_replay_bundle_highlights_unresolved_operator_approval_history(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay unresolved approval history", "Replay unresolved approval history", str(tmp_path), [])
+    approval = store.create_approval(run.id, "shell", {"command": "python -m pytest"}, "Approve shell.")
+    action = {
+        "id": f"{run.id}:approval:shell",
+        "run_id": run.id,
+        "title": run.title,
+        "reason": "approval",
+        "action": "Review pending shell approval.",
+        "ui_target": "approval",
+        "approval_id": approval["id"],
+    }
+    event = store.append_event(run.id, "operator_action_reviewed", "Operator reviewed approval.", {"decision": "open", "operator_action": action})
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+    history = bundle.operator_dispatches.unresolved_approval_histories[0]
+
+    assert bundle.operator_dispatches.unresolved_approval_history_count == 1
+    assert history.approval_id == approval["id"]
+    assert history.latest_status == "reviewed"
+    assert history.latest_event_id == event["id"]
+    assert history.sequence == [f"reviewed#{event['id']}:open"]
+    assert f"Unresolved approval #{approval['id']}: events `1`" in bundle.markdown
+
+
+def test_replay_bundle_highlights_promotion_approval_operator_route(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay promotion route", "Replay promotion route", str(tmp_path), [])
+    approval = store.create_approval(
+        run.id,
+        "workspace_promote",
+        {"tool_name": "workspace_promote", "args": {"source_path": str(tmp_path)}},
+        "Promote isolated workspace changes.",
+    )
+    action = {
+        "id": f"{run.id}:promotion_audit_promotion_approval_history_unresolved:{approval['id']}",
+        "run_id": run.id,
+        "title": run.title,
+        "reason": "promotion_audit_promotion_approval_history_unresolved",
+        "action": "Resolve reviewed workspace_promote approval before source promotion.",
+        "endpoint": f"/api/runs/{run.id}/approvals",
+        "method": "GET",
+        "ui_target": "approval",
+        "approval_id": approval["id"],
+        "approval_kind": "workspace_promote",
+        "details": ["audit_status=ready", "issue=promotion_approval_history_unresolved", f"approval_id={approval['id']}"],
+    }
+    event = store.append_event(
+        run.id,
+        "operator_action_reviewed",
+        "Operator opened queued action promotion_audit_promotion_approval_history_unresolved.",
+        {"decision": "open", "operator_action": action},
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+    route = bundle.operator_dispatches.promotion_routes[0]
+
+    assert bundle.operator_dispatches.promotion_route_count == 1
+    assert bundle.operator_dispatches.promotion_approval_route_count == 1
+    assert bundle.operator_dispatches.promotion_approval_history_count == 1
+    assert bundle.operator_dispatches.unresolved_promotion_approval_history_count == 1
+    assert bundle.operator_dispatches.unresolved_promotion_approval_histories[0].approval_id == approval["id"]
+    assert route.event_id == event["id"]
+    assert route.action_reason == "promotion_audit_promotion_approval_history_unresolved"
+    assert route.approval_id == approval["id"]
+    assert route.approval_kind == "workspace_promote"
+    assert route.endpoint == f"/api/runs/{run.id}/approvals"
+    assert f"approval_id={approval['id']}" in route.details
+    assert bundle.handoff.operator_dispatches.promotion_approval_route_count == 1
+    checks = {check.section: check for check in bundle.report_integrity.checks}
+    assert checks["handoff.operator_dispatches.promotion_route_count"].status == "ok"
+    assert checks["handoff.operator_dispatches.unresolved_promotion_approval_ids"].status == "ok"
+    assert checks["handoff.operator_dispatches.unresolved_promotion_approval_ids"].expected == str(approval["id"])
+    assert checks["handoff.operator_dispatches.pending_promotion_route_ids"].status == "ok"
+    assert checks["handoff.operator_dispatches.pending_promotion_route_ids"].actual == str(approval["id"])
+    assert "Promotion routes: `1` approval routes `1`" in bundle.markdown
+    assert f"Promotion route #{event['id']}: `reviewed` `open` `promotion_audit_promotion_approval_history_unresolved` -> `approval` approval#{approval['id']} `workspace_promote`" in bundle.markdown
+
+def test_replay_bundle_marks_promotion_approval_route_resolved_after_dispatch(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay resolved promotion route", "Replay resolved promotion route", str(tmp_path), [])
+    approval = store.create_approval(
+        run.id,
+        "workspace_promote",
+        {"tool_name": "workspace_promote", "args": {"source_path": str(tmp_path)}},
+        "Promote isolated workspace changes.",
+    )
+    action = {
+        "id": f"{run.id}:promotion_audit_promotion_approval_history_unresolved:{approval['id']}",
+        "run_id": run.id,
+        "title": run.title,
+        "reason": "promotion_audit_promotion_approval_history_unresolved",
+        "action": "Resolve reviewed workspace_promote approval before source promotion.",
+        "endpoint": f"/api/runs/{run.id}/approvals",
+        "method": "GET",
+        "ui_target": "approval",
+        "approval_id": approval["id"],
+        "approval_kind": "workspace_promote",
+        "details": ["audit_status=ready", "issue=promotion_approval_history_unresolved", f"approval_id={approval['id']}"],
+    }
+    first = store.append_event(run.id, "operator_action_reviewed", "Operator opened promotion approval route.", {"decision": "open", "operator_action": action})
+    second = store.append_event(run.id, "operator_action_confirmation_required", "Operator action requires confirmation.", {"decision": "approve", "operator_action": action})
+    third = store.append_event(run.id, "operator_action_dispatched", "Operator approved promotion approval route.", {"decision": "approve", "confirmed": True, "operator_action": action})
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+    history = bundle.operator_dispatches.promotion_approval_histories[0]
+
+    assert bundle.operator_dispatches.promotion_route_count == 3
+    assert bundle.operator_dispatches.promotion_approval_route_count == 3
+    assert bundle.operator_dispatches.promotion_approval_history_count == 1
+    assert bundle.operator_dispatches.unresolved_promotion_approval_history_count == 0
+    assert bundle.operator_dispatches.unresolved_promotion_approval_histories == []
+    assert history.approval_id == approval["id"]
+    assert history.latest_status == "dispatched"
+    assert history.latest_event_id == third["id"]
+    assert history.dispatched_count == 1
+    assert history.sequence == [
+        f"reviewed#{first['id']}:open",
+        f"confirmation_required#{second['id']}:approve",
+        f"dispatched#{third['id']}:approve",
+    ]
+    assert f"Promotion approval #{approval['id']} `workspace_promote`: latest `dispatched` #{third['id']} dispatched `1`" in bundle.markdown
+    assert f"Unresolved promotion approval #{approval['id']}" not in bundle.markdown
+
+def test_replay_promotion_audit_includes_unresolved_promotion_approval_history(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    source.mkdir()
+    workspace.mkdir()
+    (source / "app.py").write_text("print('old')\n", encoding="utf-8")
+    (workspace / "app.py").write_text("print('new')\n", encoding="utf-8")
+    run = store.create_run(
+        "Replay promotion approval history",
+        "Replay promotion approval history",
+        str(workspace),
+        [],
+        workspace_isolation=WorkspaceIsolation(
+            enabled=True,
+            mode="copy",
+            source_path=str(source),
+            workspace_path=str(workspace),
+            summary="Isolated copy.",
+        ),
+    )
+    run.state.workspace_diff = WorkspaceDiffSummary(
+        generated_at="2026-06-28T00:00:00+00:00",
+        source_path=str(source),
+        workspace_path=str(workspace),
+        files=[WorkspaceDiffFile(path="app.py", status="modified")],
+        total_files=1,
+        modified=1,
+        summary="1 workspace change(s): 0 added, 1 modified, 0 deleted.",
+    )
+    run.state.tool_calls.append(
+        ToolCallRecord(
+            id="tool-replay-promotion-test",
+            name="shell",
+            args={"command": "python -m py_compile app.py"},
+            ok=True,
+            summary="py_compile passed before source promotion.",
+            created_at="2026-06-28T00:05:00+00:00",
+        )
+    )
+    store.update_run(run.id, status="waiting_approval", state=run.state)
+    approval = store.create_approval(
+        run.id,
+        "workspace_promote",
+        {"tool_name": "workspace_promote", "args": {"source_path": str(source)}},
+        "Promote isolated workspace changes.",
+    )
+    review_event = store.append_event(
+        run.id,
+        "operator_action_reviewed",
+        "Operator reviewed workspace promotion approval.",
+        {
+            "decision": "open",
+            "operator_action": {
+                "id": f"{run.id}:approval:workspace_promote",
+                "run_id": run.id,
+                "title": run.title,
+                "reason": "approval",
+                "action": "Review pending workspace promotion approval.",
+                "ui_target": "approval",
+                "approval_id": approval["id"],
+            },
+        },
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    expected = f"approval#{approval['id']}:latest=reviewed:events=1:seq=reviewed#{review_event['id']}:open"
+    assert bundle.promotion_audit.unresolved_approval_history_count == 1
+    assert bundle.promotion_audit.unresolved_approval_histories == [expected]
+    assert any(issue.id == "promotion_approval_history_unresolved" for issue in bundle.promotion_audit.issues)
+    assert bundle.handoff.promotion_audit.unresolved_approval_histories == [expected]
+    assert "Approval histories: unresolved `1`" in bundle.markdown
+    assert f"Unresolved gate: {expected}" in bundle.markdown
 
 def test_replay_bundle_includes_ornith_preflight_action_outcomes(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
@@ -167,6 +527,63 @@ def test_replay_bundle_includes_ornith_preflight(tmp_path: Path) -> None:
     assert bundle.handoff.ornith_preflight.run_id == run.id
     assert "## Ornith Preflight" in bundle.markdown
     assert "Ornith preflight is compacted for replay." in bundle.markdown
+
+def test_replay_bundle_includes_ornith_preflight_warning_history(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay Ornith warning history", "Replay preflight warnings", str(tmp_path), [])
+    run.state.ornith_preflight = OrnithLaunchChecklistReport(
+        run_id=run.id,
+        generated_at="2026-06-28T12:20:00+00:00",
+        mode="resume",
+        status="attention",
+        ready_to_resume=False,
+        summary="Ornith preflight found thin restart evidence.",
+        items=[
+            {
+                "id": "handoff_action_context",
+                "category": "memory",
+                "status": "warn",
+                "summary": "Handoff action context is too thin for unattended Ornith resume: missing restart_ledger.",
+                "evidence": ["generated=True", "restart_ledger=0"],
+                "next_action": "Refresh/checkpoint the run handoff.",
+            }
+        ],
+        next_actions=["Refresh/checkpoint the run handoff."],
+    )
+    run.state.handoff_summary.ornith_preflight = run.state.ornith_preflight
+    store.update_run(run.id, state=run.state)
+    event = store.append_event(
+        run.id,
+        "act_preflight_reorient",
+        "Act preflight detected thin handoff action context.",
+        {
+            "handoff_action_context": {
+                "status": "warn",
+                "summary": "Handoff action context is too thin for unattended Ornith resume: missing restart_ledger.",
+                "evidence": ["generated=True", "compact=True", "restart_ledger=0"],
+                "next_action": "Refresh/checkpoint the handoff before selecting the next tool action.",
+            }
+        },
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.ornith_preflight_warnings.total_count == 2
+    assert bundle.ornith_preflight_warnings.action_context_reorient_count == 1
+    assert bundle.ornith_preflight_warnings.latest_reorient_event_id == event["id"]
+    assert bundle.handoff.ornith_preflight_warnings.total_count == 2
+    warning_check = next(check for check in bundle.readiness_completion.checks if check.id == "ornith_preflight_warnings")
+    assert warning_check.status == "block"
+    assert bundle.readiness_completion.ornith_preflight_warning_count == 2
+    assert bundle.readiness_completion.ornith_preflight_reorient_count == 1
+    assert "## Ornith Preflight Warning History" in bundle.markdown
+    assert "action-context reorients `1`" in bundle.markdown
+    assert f"#{event['id']} `warn` `act_preflight_reorient` handoff_action_context" in bundle.markdown
+    assert "restart_ledger=0" in bundle.markdown
 
 def test_replay_bundle_includes_active_recovery_plan(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
@@ -448,6 +865,30 @@ def test_replay_bundle_includes_source_evidence_preview(tmp_path: Path) -> None:
             citation="[Source preview docs](https://example.com/source-preview)",
         )
     ]
+    run.state.tool_calls = [
+        ToolCallRecord(
+            id="tool-guard-1",
+            name="file_read",
+            args={
+                "model_guard": "current_task_mismatch",
+                "guarded_tool": "run_tests",
+                "current_task_id": "task-edit",
+                "current_task_kind": "edit",
+                "guard_reason": "edit_task_selected_proof_tool_without_evidence",
+            },
+            ok=True,
+            summary="Harness redirected premature proof to edit inspection.",
+        )
+    ]
+    run.state.patch_proposals = [
+        PatchProposal(
+            id="patch-1",
+            title="Patch app.py safely",
+            files=["app.py"],
+            diff="--- a/app.py\n+++ b/app.py\n@@\n-old\n+new\n",
+            status="pending",
+        )
+    ]
     run.state.desktop_snapshots = [
         DesktopSnapshot(
             id="browser-1",
@@ -472,9 +913,102 @@ def test_replay_bundle_includes_source_evidence_preview(tmp_path: Path) -> None:
     assert bundle.handoff.source_evidence.web_source_count == 1
     assert bundle.handoff.action_context.generated_at
     assert "Action context pack:" in bundle.action_context.compact_prompt
+    assert "model_guards=current_task_mismatch" in bundle.action_context.compact_prompt
+    assert "edit_evidence=patch:pending:patch-1:app.py" in bundle.action_context.compact_prompt
     assert "## Source Evidence" in bundle.markdown
     assert "## Action Context" in bundle.markdown
     assert "Source preview docs" in bundle.markdown
+    assert "model_guards=current_task_mismatch" in bundle.markdown
+    assert "edit_evidence=patch:pending:patch-1:app.py" in bundle.markdown
+
+
+def test_replay_bundle_includes_desktop_effect_proof_preview(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay desktop proof", "Replay desktop", str(tmp_path), [])
+    run.state.tool_calls = [
+        ToolCallRecord(
+            id="desktop-click-1",
+            name="desktop_click",
+            ok=True,
+            summary="Clicked the visible Save button.",
+            created_at="2026-06-29T10:00:00+00:00",
+        ),
+        ToolCallRecord(
+            id="desktop-shot-1",
+            name="desktop_screenshot",
+            ok=True,
+            summary="Captured the visible post-click state.",
+            created_at="2026-06-29T10:01:00+00:00",
+        ),
+    ]
+    run.state.desktop_snapshots = [
+        DesktopSnapshot(
+            id="desktop-proof",
+            timestamp="2026-06-29T10:01:00+00:00",
+            title="Desktop screenshot",
+            path=str(tmp_path / "desktop-proof.png"),
+            summary="Captured the visible post-click state.",
+        )
+    ]
+    store.update_run(run.id, state=run.state)
+    store.append_event(
+        run.id,
+        "desktop_effect_proof_repaired",
+        "Refreshed stale desktop-effect proof metadata; no new desktop screenshot was needed.",
+        {
+            "desktop_effect_proof_repair": {
+                "outcome": "metadata_refreshed",
+                "summary": "Refreshed stale desktop-effect proof metadata; no new desktop screenshot was needed.",
+                "previous_report_integrity": {"status": "needs_refresh"},
+                "refreshed_report_integrity": {"status": "ok"},
+                "previous_desktop_effect_proof": {"status": "needs_proof", "latest_action_id": "desktop-click-1"},
+                "refreshed_desktop_effect_proof": {
+                    "status": "proof_available",
+                    "latest_action_id": "desktop-click-1",
+                    "proof_call_id": "desktop-shot-1",
+                    "proof_snapshot": {"id": "desktop-proof"},
+                },
+                "report_integrity_refresh_reasons": ["handoff.desktop_effect_proof.status stale"],
+                "refresh_reason_count": 1,
+            }
+        },
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.desktop_effect_proof.status == "proof_available"
+    assert bundle.desktop_effect_proof.proof_snapshot is not None
+    assert bundle.desktop_effect_proof.proof_snapshot.id == "desktop-proof"
+    assert bundle.handoff.desktop_effect_proof.proof_tool == "desktop_screenshot"
+    checks = {check.section: check for check in bundle.report_integrity.checks}
+    assert checks["handoff.desktop_effect_proof.status"].status == "ok"
+    assert checks["handoff.desktop_effect_proof.proof_snapshot_id"].status == "ok"
+    assert bundle.desktop_effect_proof_repairs.latest_outcome == "metadata_refreshed"
+    assert bundle.desktop_effect_proof_repairs.metadata_refreshed_count == 1
+    assert bundle.handoff.desktop_effect_proof_repairs.entries[0].proof_snapshot_id == "desktop-proof"
+    assert "## Desktop Effect Proof" in bundle.markdown
+    assert "## Desktop Effect Proof Repairs" in bundle.markdown
+    assert "metadata_refreshed" in bundle.markdown
+    assert "desktop-proof" in bundle.markdown
+
+    compiled_run = store.get_run(run.id)
+    compiled_run.state.desktop_effect_proof = bundle.desktop_effect_proof
+    compiled_run.state.desktop_effect_proof_repairs = bundle.desktop_effect_proof_repairs
+    compiled_run.state.handoff_summary = bundle.handoff
+    prompt, snapshot = ContextCompiler(target_tokens=4000).compile(
+        compiled_run,
+        compiled_run.state,
+        MemoryContext(hits=[], warnings=[]),
+        [],
+    )
+    assert "desktop_effect_proof" in snapshot.sections
+    assert "Desktop effect proof: proof_available" in prompt
+    assert "repairs=metadata_refreshed/1" in prompt
+    assert "snapshot=desktop-proof" in prompt
 
 def test_replay_bundle_includes_acceptance_evidence(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
@@ -631,6 +1165,9 @@ def test_replay_bundle_includes_run_progress(tmp_path: Path) -> None:
 def test_replay_bundle_includes_report_integrity(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
     run = store.create_run("Replay report integrity", "Replay integrity", str(tmp_path), ["Tests pass"])
+    _prompt, snapshot = ContextCompiler(4000).compile(run, run.state, MemoryContext(hits=[], warnings=[]), [])
+    run.state.context_snapshot = snapshot
+    store.update_run(run.id, state=run.state)
 
     bundle = build_replay_bundle(
         store.get_run(run.id),
@@ -642,6 +1179,81 @@ def test_replay_bundle_includes_report_integrity(tmp_path: Path) -> None:
     assert bundle.handoff.report_integrity.ok_count == bundle.report_integrity.ok_count
     assert "## Report Integrity" in bundle.markdown
     assert "Handoff and replay report index is complete" in bundle.markdown
+
+
+def test_replay_bundle_includes_report_integrity_refresh_reasons(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay refresh reasons", "Replay refresh reasons", str(tmp_path), [])
+    reason = "stale:handoff.approval_reviews.review_count | expected=1:2 | actual=1:1"
+    refresh_event = store.append_event(
+        run.id,
+        "report_integrity_refresh",
+        "Refreshed compact handoff and report integrity before resume preflight.",
+        {
+            "report_integrity": {"status": "ok"},
+            "previous_report_integrity": {"status": "needs_refresh"},
+            "report_integrity_refresh_reasons": [reason],
+            "refresh_reason_count": 1,
+        },
+    )
+    preflight_event = store.append_event(
+        run.id,
+        "resume_preflight_blocked",
+        "Resume preflight blocked after refresh.",
+        {
+            "accepted": False,
+            "reason": "Pending approval still blocks resume.",
+            "report_integrity_refreshed": True,
+            "report_integrity_refresh_reasons": [reason],
+        },
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+    refresh = bundle.report_integrity_refreshes[0]
+
+    assert refresh.event_id == refresh_event["id"]
+    assert refresh.previous_report_status == "needs_refresh"
+    assert refresh.report_status == "ok"
+    assert refresh.reason_count == 1
+    assert refresh.reasons == [reason]
+    assert refresh.preflight_event_id == preflight_event["id"]
+    assert refresh.preflight_event_kind == "resume_preflight_blocked"
+    assert refresh.preflight_accepted is False
+    assert bundle.handoff.report_integrity_refreshes[0].event_id == refresh_event["id"]
+    assert "Refreshes: `1`" in bundle.markdown
+    assert f"Latest refresh preflight: `#{preflight_event['id']}`" in bundle.markdown
+    assert f"Refresh reason: {reason}" in bundle.markdown
+
+def test_replay_report_integrity_checks_approval_review_handoff(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay approval integrity", "Replay approval integrity", str(tmp_path), ["Tests pass"])
+    _prompt, snapshot = ContextCompiler(4000).compile(run, run.state, MemoryContext(hits=[], warnings=[]), [])
+    run.state.context_snapshot = snapshot
+    approval = store.create_approval(
+        run.id,
+        "shell",
+        {"tool_name": "shell", "args": {"command": "python -m pytest"}},
+        "Approve shell verification.",
+    )
+    store.update_run(run.id, state=run.state)
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+    checks = {check.section: check for check in bundle.report_integrity.checks}
+
+    assert bundle.report_integrity.status == "ok"
+    assert bundle.handoff.approvals == ["shell:pending:unreviewed"]
+    assert bundle.handoff.approval_reviews[0].id == approval["id"]
+    assert checks["handoff.approval_reviews"].status == "ok"
+    assert checks["handoff.approvals.pending_count"].status == "ok"
+    assert checks["handoff.approval_labels.unreviewed_count"].status == "ok"
 
 
 def test_replay_bundle_includes_objective_readiness(tmp_path: Path) -> None:
@@ -818,6 +1430,119 @@ def test_replay_bundle_includes_action_readiness_decisions(tmp_path: Path) -> No
     assert "## Action Readiness Decisions" in bundle.markdown
     assert "intended proof was satisfied" in bundle.markdown
 
+def test_replay_bundle_includes_self_scaffold_change_intent(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Let Ornith reshape its harness", "Self Scaffold Replay", str(tmp_path), [])
+    run.state.tool_profile = "ornith_self_scaffold"
+    run.state.task_graph = [
+        TaskNode(id="task-self", title="Revise task graph safely", kind="decision", status="in_progress")
+    ]
+    run.state.current_task_id = "task-self"
+    run.state.files_touched.append("app.py")
+    run.state.patch_proposals.append(
+        PatchProposal(
+            id="patch-1",
+            title="Patch app.py safely",
+            files=["app.py"],
+            status="pending",
+        )
+    )
+    run.state.patch_applications.append(
+        PatchApplication(
+            id="apply-1",
+            patch_id="patch-1",
+            status="applied",
+            files=["app.py"],
+            backup_id="backup-1",
+            manifest_path=str(tmp_path / "manifest.json"),
+            summary="Applied patch-1 to app.py.",
+            applied_at="2026-06-29T00:00:00+00:00",
+        )
+    )
+    run.state.tool_calls.append(
+        ToolCallRecord(
+            id="tool-guard",
+            name="file_read",
+            args={
+                "model_guard": "current_task_mismatch",
+                "guarded_tool": "run_tests",
+                "current_task_id": "task-self",
+                "current_task_kind": "decision",
+                "guard_reason": "Ornith selected a proof tool before explaining the scaffold change.",
+            },
+            ok=False,
+            summary="Guarded stale tool selection.",
+        )
+    )
+    store.update_run(run.id, state=run.state)
+    store.append_event(run.id, "context_checkpoint", "Refreshed self-scaffold context pack.", {"reason": "self_scaffold"})
+    store.append_event(
+        run.id,
+        "operator_action_reviewed",
+        "Operator accepted self-scaffold change intent for current guard/reorient changes.",
+        {
+            "operator_action": {"ui_target": "self_scaffold", "reason": "self_scaffold", "action": "Review guard posture."},
+            "self_scaffold_review": {
+                "status": "needs_review",
+                "change_count": 4,
+                "guard_count": 1,
+                "reviewed_change_count": 2,
+                "reviewed_change_ids": [
+                    "model_guard:0:current-task-mismatch-guarded-run-tests-for-task-self",
+                    "edit_evidence:2:patch-apply-applied-patch-1-app-py",
+                ],
+                "remaining_goal_review": False,
+            },
+        },
+    )
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.self_scaffold.status == "needs_review"
+    assert bundle.self_scaffold.task_graph_count == 1
+    assert bundle.self_scaffold.action_context_count == 1
+    assert bundle.self_scaffold.guard_count >= 1
+    assert bundle.handoff.self_scaffold.change_count == bundle.self_scaffold.change_count
+    assert any(change.kind == "tool_posture" for change in bundle.self_scaffold.changes)
+    assert any("without replaying raw logs" in change.intent for change in bundle.self_scaffold.changes)
+    assert bundle.self_scaffold_reviews.status == "reviewed"
+    assert bundle.self_scaffold_reviews.accepted_count == 1
+    assert bundle.self_scaffold_reviews.reviewed_change_count == 2
+    assert bundle.self_scaffold_rollback_intents.status == "needs_approval"
+    assert bundle.self_scaffold_rollback_intents.patch_rollback_count == 1
+    assert bundle.self_scaffold_rollback_intents.steering_count >= 1
+    rollback_intent = next(entry for entry in bundle.self_scaffold_rollback_intents.entries if entry.action_kind == "patch_rollback")
+    assert rollback_intent.proposed_tool == "patch_rollback"
+    assert rollback_intent.requires_approval is True
+    assert rollback_intent.mutation_automatic is False
+    assert rollback_intent.patch_id == "patch-1"
+    assert rollback_intent.backup_id == "backup-1"
+    assert bundle.handoff.self_scaffold_rollback_intents.patch_rollback_count == 1
+    assert bundle.handoff.self_scaffold_reviews.latest_event_id == bundle.self_scaffold_reviews.latest_event_id
+    assert "## Self Scaffold" in bundle.markdown
+    assert "Review outcomes:" in bundle.markdown
+    assert "Rollback intents:" in bundle.markdown
+    assert "patch_rollback" in bundle.markdown
+    assert "Review `#" in bundle.markdown
+    assert "Reverse:" in bundle.markdown
+
+    prompt, snapshot = ContextCompiler(6000).compile(
+        store.get_run(run.id),
+        store.get_run(run.id).state.model_copy(update={"self_scaffold": bundle.self_scaffold, "handoff_summary": bundle.handoff}),
+        MemoryContext(hits=[], warnings=[]),
+        [],
+    )
+    assert "## self_scaffold" in prompt
+    assert "review_outcomes" in prompt
+    assert "rollback_intents" in prompt
+    assert "patch rollback candidate" in prompt
+    assert "self-scaffold review outcome" in prompt
+    assert "self_scaffold" in snapshot.sections
+
 def test_replay_bundle_includes_goal_evolution(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
     run = store.create_run("Keep the original goal", "Goal Replay", str(tmp_path), [])
@@ -848,3 +1573,192 @@ def test_replay_bundle_includes_goal_evolution(tmp_path: Path) -> None:
     assert bundle.handoff.goal_evolution.latest_decision.proposed_goal == "Sharper replay goal"
     assert "## Goal Evolution" in bundle.markdown
     assert "Sharper replay goal" in bundle.markdown
+
+def test_replay_bundle_includes_git_checkpoint(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay git posture", "Git Replay", str(tmp_path), [])
+    run.state.git_checkpoint = GitCheckpointReport(
+        run_id=run.id,
+        generated_at="2026-06-27T08:01:00+00:00",
+        status="commit_recommended",
+        branch="main",
+        head_sha="abc1234",
+        remote_names=["origin"],
+        remote_count=1,
+        github_remote_count=1,
+        changed_count=2,
+        summary="Git checkpoint commit_recommended: changed=2.",
+        recommended_action="Commit a scoped local checkpoint.",
+    )
+    store.update_run(run.id, state=run.state)
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.git_checkpoint.status in {"commit_recommended", "verify_first", "needs_remote", "clean", "not_repo"}
+    assert bundle.handoff.git_checkpoint.generated_at
+    assert "## Git Checkpoint" in bundle.markdown
+    assert "Recommended action" in bundle.markdown
+
+def test_replay_bundle_includes_context_coverage(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run("Replay context coverage", "Context Replay", str(tmp_path), [])
+    run.state.context_snapshot = ContextSnapshot(
+        run_id=run.id,
+        generated_at="2026-06-27T08:01:00+00:00",
+        estimated_tokens=1200,
+        sections=["goal", "handoff"],
+        selected_section_count=2,
+        dropped_sections=["memory"],
+        dropped_section_count=1,
+        required_sections_missing=["memory"],
+        coverage_status="critical",
+        recommended_action="Checkpoint and re-orient from handoff before asking Ornith for another broad action.",
+        prompt_preview="## goal\nReplay context coverage",
+    )
+    store.update_run(run.id, state=run.state)
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.context_snapshot.coverage_status == "critical"
+    assert bundle.handoff.context_snapshot.required_sections_missing == ["memory"]
+    assert "## Context Coverage" in bundle.markdown
+    assert "Required missing: memory" in bundle.markdown
+
+def test_replay_bundle_includes_readiness_proof_history(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run(
+        "Improve AgentOrinth into a Codex-like long coding harness",
+        "Readiness proof history",
+        str(tmp_path),
+        [],
+    )
+    review_event = store.append_event(
+        run.id,
+        "operator_action_reviewed",
+        "Operator accepted self-scaffold review.",
+        {
+            "self_scaffold_review": {
+                "reviewed_change_count": 2,
+                "reviewed_change_ids": ["guard-1", "guard-2"],
+            }
+        },
+    )
+    claim_event = store.append_event(
+        run.id,
+        "readiness_claim",
+        "Readiness claim accepted after proof history review.",
+        {"readiness_completion": {"can_claim_milestone": True}},
+    )
+    run = store.get_run(run.id)
+    run.state.acceptance_evidence.append(
+        AcceptanceCriterionEvidence(
+            id="replay-source-visible-readiness",
+            criterion="Readiness proof carries web and browser refs.",
+            status="verified",
+            required_labels=["web", "browser"],
+            matched_labels=["web", "browser"],
+        )
+    )
+    run.state.web_sources.append(
+        WebSource(
+            id="web-proof-1",
+            title="Readiness source proof",
+            url="https://example.test/readiness",
+            timestamp="2026-06-28T09:01:00+00:00",
+            excerpt="Compact web source proof for readiness evidence.",
+            citation="[web-proof-1]",
+        )
+    )
+    run.state.desktop_snapshots.append(
+        DesktopSnapshot(
+            id="browser-proof-1",
+            title="Browser readiness proof screenshot",
+            timestamp="2026-06-28T09:02:00+00:00",
+            path=str(tmp_path / "browser-proof.png"),
+            summary="Browser screenshot proof for readiness evidence.",
+        )
+    )
+    run.state.readiness_rehearsal = ReadinessRehearsalReport(
+        run_id=run.id,
+        generated_at="2026-06-28T09:00:00+00:00",
+        status="passed",
+        summary="Readiness rehearsal passed with proof history.",
+        restart_simulated=True,
+        accepted_event_id=claim_event["id"],
+        self_scaffold_reviewed=True,
+        self_scaffold_review_event_id=review_event["id"],
+        self_scaffold_reviewed_change_count=2,
+        post_review_handoff_goal_preserved=True,
+        post_review_handoff_next_action_preserved=True,
+        post_review_resume_prompt_goal_preserved=True,
+        post_review_resume_prompt_next_action_preserved=True,
+        replay_attached=True,
+        handoff_attached=True,
+        steps=[
+            ReadinessRehearsalStep(
+                id="self_scaffold_review",
+                status="passed",
+                summary="Self-scaffold review was accepted after restart.",
+                evidence=["reviewed=2"],
+                event_id=review_event["id"],
+                event_kind="operator_action_reviewed",
+                run_status="paused",
+                milestone="decide",
+            ),
+            ReadinessRehearsalStep(
+                id="post_review_handoff_alignment",
+                status="passed",
+                summary="Post-review handoff preserved goal and next action.",
+                evidence=["resume_prompt_next_action=True"],
+                run_status="queued",
+                milestone="decide",
+            ),
+            ReadinessRehearsalStep(
+                id="accepted_claim",
+                status="passed",
+                summary="Readiness claim was accepted.",
+                evidence=["claim_event=accepted"],
+                event_id=claim_event["id"],
+                event_kind="readiness_claim",
+                run_status="completed",
+                milestone="decide",
+            ),
+        ],
+    )
+    store.update_run(run.id, state=run.state)
+
+    bundle = build_replay_bundle(
+        store.get_run(run.id),
+        events=store.list_events(run.id),
+        approvals=store.list_approvals(run.id),
+    )
+
+    assert bundle.readiness_proof_history.status == "complete"
+    assert bundle.readiness_proof_history.self_scaffold_review_count == 1
+    assert bundle.readiness_proof_history.post_review_handoff_count == 1
+    assert bundle.readiness_proof_history.resume_prompt_preservation_count == 1
+    assert bundle.readiness_proof_history.readiness_claim_count == 1
+    assert bundle.readiness_proof_history.source_evidence_ref_count == 2
+    assert bundle.readiness_proof_history.source_evidence_labels == ["browser", "web"]
+    claim_entries = [entry for entry in bundle.readiness_proof_history.entries if entry.proof_type == "readiness_claim"]
+    assert claim_entries
+    assert {ref.id for ref in claim_entries[0].source_refs} == {"browser-proof-1", "web-proof-1"}
+    assert bundle.handoff.readiness_proof_history.status == "complete"
+    assert bundle.handoff.readiness_proof_history.source_evidence_ref_count == 2
+    assert bundle.readiness_source_ref_preview.status == "ready"
+    assert bundle.readiness_source_ref_preview.proof_ref_count == 2
+    assert bundle.handoff.readiness_source_ref_preview.status == "ready"
+    assert bundle.handoff.readiness_source_ref_preview.proof_ref_count == 2
+    assert "## Readiness Proof History" in bundle.markdown
+    assert "## Readiness Source Refs" in bundle.markdown
+    assert "post-review handoff" in bundle.markdown
+    assert "Source refs: `2`" in bundle.markdown
+    assert "web:web_source:web-proof-1" in bundle.markdown

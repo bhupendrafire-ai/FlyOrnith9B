@@ -1,10 +1,14 @@
-﻿export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:9127";
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:9127";
 
 export type RunState = {
   goal: string;
   proposed_goal: string | null;
   goal_revision_reason: string;
   goal_evolution: GoalEvolutionReport;
+  git_checkpoint: GitCheckpointReport;
+  promotion_audit: PromotionAuditReport;
+  promotion_verification: PromotionVerificationReport;
+  promotion_repair: PromotionRepairReport;
   current_plan: string[];
   completed_steps: string[];
   next_step: string;
@@ -20,6 +24,9 @@ export type RunState = {
   run_health: RunHealthReport;
   run_progress: RunProgressReport;
   report_integrity: ReportIntegrityReport;
+  report_integrity_refreshes: ReportIntegrityRefreshRecord[];
+  checkpoint_quality: CheckpointQualityReport;
+  checkpoint_quality_resumes: CheckpointQualityResumeReport;
   objective_readiness: ObjectiveReadinessReport;
   objective_readiness_proof_outcomes: ObjectiveReadinessProofOutcome[];
   readiness_completion: ReadinessCompletionReport;
@@ -38,6 +45,7 @@ export type RunState = {
   open_questions: string[];
   memory_refs: string[];
   tool_profile: string;
+  approval_mode: string;
   web_enabled: boolean;
   browser_enabled: boolean;
   desktop_enabled: boolean;
@@ -49,9 +57,17 @@ export type RunState = {
   web_sources: WebSource[];
   desktop_snapshots: DesktopSnapshot[];
   source_evidence: SourceEvidencePreviewReport;
+  readiness_source_ref_preview: ReadinessSourceRefPreviewReport;
+  desktop_effect_proof: DesktopEffectProofReport;
+  desktop_effect_proof_repairs: DesktopEffectProofRepairReport;
   action_context: ActionContextPack;
-  context_budget: ContextBudget;
+  self_scaffold: SelfScaffoldReport;
+  self_scaffold_reviews: SelfScaffoldReviewReport;
+  self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport;
   context_snapshot: ContextSnapshot;
+  resume_prompt_quality: ResumePromptQualityReport;
+  resume_handoff_diff: ResumeHandoffDiffReport;
+  context_budget: ContextBudget;
   handoff_summary: HandoffBundle;
   repo_map: RepoMap;
   workspace_isolation: WorkspaceIsolation;
@@ -192,6 +208,56 @@ export type DesktopSnapshot = {
   summary: string;
 };
 
+export type DesktopEffectProofReport = {
+  run_id: string;
+  generated_at: string;
+  status: "not_required" | "needs_proof" | "proof_available";
+  requires_attention: boolean;
+  latest_action_id: string;
+  latest_action_tool: string;
+  latest_action_created_at: string;
+  latest_action_summary: string;
+  proof_call_id: string;
+  proof_tool: string;
+  proof_created_at: string;
+  proof_summary: string;
+  proof_snapshot: DesktopSnapshot | null;
+  proof_snapshot_count: number;
+  ledger: string[];
+  recommended_action: string;
+};
+
+export type DesktopEffectProofRepairRecord = {
+  event_id: number;
+  timestamp: string;
+  outcome: "metadata_refreshed" | "capture_completed" | "capture_failed" | "blocked" | "skipped_noop";
+  previous_integrity_status: string;
+  refreshed_integrity_status: string;
+  previous_proof_status: string;
+  refreshed_proof_status: string;
+  latest_action_id: string;
+  proof_call_id: string;
+  proof_snapshot_id: string;
+  reason_count: number;
+  reasons: string[];
+  summary: string;
+};
+
+export type DesktopEffectProofRepairReport = {
+  run_id: string;
+  generated_at: string;
+  total_count: number;
+  metadata_refreshed_count: number;
+  capture_completed_count: number;
+  capture_failed_count: number;
+  blocked_count: number;
+  skipped_noop_count: number;
+  latest_outcome: string;
+  summary: string;
+  recommended_action: string;
+  entries: DesktopEffectProofRepairRecord[];
+};
+
 export type SourceEvidencePreviewEntry = {
   id: string;
   kind: "web_source" | "browser_snapshot" | "desktop_snapshot";
@@ -223,12 +289,114 @@ export type SourceEvidencePreviewReport = {
   recommended_action: string;
   entries: SourceEvidencePreviewEntry[];
 };
+export type SelfScaffoldChangeRecord = {
+  id: string;
+  kind: "task_graph" | "action_context" | "tool_posture" | "model_guard" | "edit_evidence" | "goal_evolution" | "checkpoint" | "event";
+  status: "observed" | "active" | "needs_review";
+  source: string;
+  structure_ref: string;
+  summary: string;
+  intent: string;
+  reversible: boolean;
+  reverse_hint: string;
+  evidence: string[];
+  event_id: number;
+  created_at: string;
+};
+
+export type SelfScaffoldReport = {
+  run_id: string;
+  generated_at: string;
+  status: "empty" | "observed" | "needs_review";
+  change_count: number;
+  task_graph_count: number;
+  action_context_count: number;
+  tool_posture_count: number;
+  guard_count: number;
+  reversible_count: number;
+  review_count: number;
+  reviewed_change_count: number;
+  latest_reviewed_at: string;
+  latest_review_event_id: number;
+  latest_reviewed_change_ids: string[];
+  latest_change: string;
+  summary: string;
+  recommended_action: string;
+  changes: SelfScaffoldChangeRecord[];
+};
+export type SelfScaffoldReviewRecord = {
+  event_id: number;
+  timestamp: string;
+  status: "accepted" | "partial" | "noop";
+  change_count: number;
+  guard_count: number;
+  reviewed_change_count: number;
+  reviewed_change_ids: string[];
+  remaining_goal_review: boolean;
+  action_reason: string;
+  action_summary: string;
+  summary: string;
+};
+
+export type SelfScaffoldReviewReport = {
+  run_id: string;
+  generated_at: string;
+  status: "none" | "reviewed" | "needs_goal_review";
+  total_count: number;
+  accepted_count: number;
+  partial_count: number;
+  noop_count: number;
+  reviewed_change_count: number;
+  remaining_goal_review_count: number;
+  latest_event_id: number;
+  latest_reviewed_change_ids: string[];
+  summary: string;
+  recommended_action: string;
+  entries: SelfScaffoldReviewRecord[];
+};
+
+
+export type SelfScaffoldRollbackIntentRecord = {
+  id: string;
+  source_review_event_id: number;
+  reviewed_change_id: string;
+  change_kind: string;
+  action_kind: "steer" | "patch_rollback" | "patch_review" | "handoff_refresh" | "goal_review";
+  status: "suggested" | "needs_approval" | "resolved" | "stale";
+  proposed_tool: string;
+  requires_approval: boolean;
+  mutation_automatic: boolean;
+  patch_id: string;
+  backup_id: string;
+  rollback_manifest_path: string;
+  files: string[];
+  reverse_hint: string;
+  summary: string;
+  evidence: string[];
+};
+
+export type SelfScaffoldRollbackIntentReport = {
+  run_id: string;
+  generated_at: string;
+  status: "none" | "available" | "needs_approval" | "resolved";
+  intent_count: number;
+  patch_rollback_count: number;
+  steering_count: number;
+  latest_review_event_id: number;
+  summary: string;
+  recommended_action: string;
+  entries: SelfScaffoldRollbackIntentRecord[];
+};
 export type ActionContextPack = {
   run_id: string;
   generated_at: string;
   milestone: string;
   current_task_id: string;
   current_task_title: string;
+  task_transition_ledger: string[];
+  model_guard_ledger: string[];
+  edit_evidence_ledger: string[];
+  desktop_supervision_ledger: string[];
   action_readiness_status: string;
   selected_tool: string;
   selected_label: string;
@@ -239,10 +407,18 @@ export type ActionContextPack = {
   source_evidence_summary: string;
   missing_source_labels: string[];
   latest_source_evidence: string;
+  readiness_source_ref_status: string;
+  readiness_source_ref_action: string;
+  readiness_source_ref_missing_evidence_labels: string[];
+  readiness_source_ref_missing_proof_labels: string[];
+  readiness_source_ref_source_labels: string[];
+  readiness_source_ref_proof_labels: string[];
   recent_verified_commands: string[];
   recent_verified_files: string[];
   recent_successes: string[];
   failure_ledger: string[];
+  resolved_failure_ledger: string[];
+  promotion_repair_hints: string[];
   recovery_hint: string;
   context_budget: string;
   compact_prompt: string;
@@ -255,9 +431,17 @@ export type ContextBudget = {
 };
 
 export type ContextSnapshot = {
+  run_id: string;
   generated_at: string;
   estimated_tokens: number;
   sections: string[];
+  selected_section_count: number;
+  dropped_sections: string[];
+  dropped_section_count: number;
+  required_sections_missing: string[];
+  section_token_estimates: Record<string, number>;
+  coverage_status: "ok" | "degraded" | "critical";
+  recommended_action: string;
   prompt_preview: string;
 };
 
@@ -354,6 +538,98 @@ export type PatchApplication = {
   rolled_back_at: string;
 };
 
+export type PromotionAuditIssue = {
+  id: string;
+  severity: "info" | "warning" | "blocker";
+  summary: string;
+  evidence: string[];
+  next_action: string;
+};
+
+export type PromotionAuditReport = {
+  run_id: string;
+  generated_at: string;
+  status: "ready" | "needs_verification" | "blocked" | "not_applicable";
+  ready_to_promote: boolean;
+  changed_file_count: number;
+  patch_proposal_count: number;
+  patch_application_count: number;
+  promotion_count: number;
+  pending_patch_count: number;
+  pending_approval_count: number;
+  unresolved_approval_history_count: number;
+  unresolved_approval_histories: string[];
+  latest_verification: string;
+  workspace_diff_status: string;
+  workspace_diff_summary: string;
+  resume_drift_status: string;
+  git_checkpoint_status: string;
+  summary: string;
+  recommended_action: string;
+  issues: PromotionAuditIssue[];
+};
+
+export type PromotionVerificationAttemptRecord = {
+  event_id: number;
+  timestamp: string;
+  command: string;
+  ok: boolean;
+  audit_status: string;
+  summary: string;
+  tool_ok: boolean;
+  selected_alternate: boolean;
+  returncode: number;
+  failure_kind: string;
+  suspected_file: string;
+  suspected_line: number;
+  repair_hint: string;
+  evidence_excerpt: string;
+};
+
+export type PromotionVerificationReport = {
+  run_id: string;
+  generated_at: string;
+  status: "none" | "ready" | "needs_retry" | "repeated_failure";
+  attempt_count: number;
+  failed_count: number;
+  success_count: number;
+  repeated_failure_count: number;
+  repair_hint_count: number;
+  latest_attempt: PromotionVerificationAttemptRecord;
+  latest_failed_command: string;
+  latest_failure_kind: string;
+  latest_suspected_file: string;
+  latest_repair_hint: string;
+  next_command: string;
+  should_use_alternate: boolean;
+  failure_kinds: string[];
+  summary: string;
+  recommended_action: string;
+  attempts: PromotionVerificationAttemptRecord[];
+};
+
+export type PromotionRepairReport = {
+  run_id: string;
+  generated_at: string;
+  phase: "none" | "needs_file_read" | "needs_patch_proposal" | "patch_proposed" | "ready_to_verify";
+  active: boolean;
+  target_file: string;
+  target_line: number;
+  failure_kind: string;
+  repair_hint: string;
+  evidence_excerpt: string;
+  latest_failed_command: string;
+  file_read: boolean;
+  file_read_tool_id: string;
+  file_excerpt_chars: number;
+  patch_proposal_id: string;
+  patch_status: string;
+  patch_application_id: string;
+  next_tool: string;
+  next_action: string;
+  next_verification_command: string;
+  summary: string;
+};
 export type FailureRecord = {
   id: string;
   kind: string;
@@ -362,6 +638,10 @@ export type FailureRecord = {
   count: number;
   last_seen: string;
   recovery_hint: string;
+  command: string;
+  target: string;
+  returncode: number | null;
+  evidence_excerpt: string;
 };
 
 export type RecoveryPlan = {
@@ -556,6 +836,84 @@ export type ReportIntegrityReport = {
   checks: ReportIntegrityCheck[];
 };
 
+export type ReportIntegrityRefreshRecord = {
+  event_id: number;
+  timestamp: string;
+  report_status: string;
+  previous_report_status: string;
+  reason_count: number;
+  reasons: string[];
+  preflight_event_id: number;
+  preflight_event_kind: string;
+  preflight_accepted: boolean | null;
+  preflight_reason: string;
+};
+
+export type CheckpointQualityIssue = {
+  id: string;
+  severity: "warning" | "blocker";
+  summary: string;
+  evidence: string;
+  recommended_action: string;
+};
+
+export type CheckpointQualityReport = {
+  run_id: string;
+  generated_at: string;
+  status: "unknown" | "ready" | "needs_checkpoint" | "blocked";
+  run_note_present: boolean;
+  run_note_path: string;
+  run_note_chars: number;
+  has_checkpoint_heading: boolean;
+  has_active_goal: boolean;
+  has_current_step: boolean;
+  has_next_action: boolean;
+  has_resume_prompt: boolean;
+  has_no_raw_logs_instruction: boolean;
+  expected_report_integrity_refresh: boolean;
+  has_report_integrity_refresh: boolean;
+  expected_refresh_event_id: number;
+  expected_refresh_reason: string;
+  issue_count: number;
+  blocker_count: number;
+  warning_count: number;
+  summary: string;
+  recommended_action: string;
+  issues: CheckpointQualityIssue[];
+};
+
+export type CheckpointQualityResumeRecord = {
+  repair_event_id: number;
+  repair_completed_event_id: number;
+  repair_timestamp: string;
+  repair_reason: string;
+  repair_ui_target: string;
+  repair_action: string;
+  resume_event_id: number;
+  resume_timestamp: string;
+  resume_source: string;
+  resume_accepted: boolean | null;
+  resume_policy_action: string;
+  resume_reason: string;
+  checkpoint_quality_status: string;
+  checkpoint_quality_ready: boolean;
+  summary: string;
+};
+
+export type CheckpointQualityResumeReport = {
+  run_id: string;
+  generated_at: string;
+  status: "none" | "awaiting_resume" | "resumed" | "blocked";
+  repair_count: number;
+  resumed_after_repair_count: number;
+  blocked_after_repair_count: number;
+  awaiting_resume_count: number;
+  latest: CheckpointQualityResumeRecord;
+  summary: string;
+  recommended_action: string;
+  entries: CheckpointQualityResumeRecord[];
+};
+
 export type ObjectiveReadinessProof = {
   tool_kind: string;
   evidence_label: string;
@@ -646,6 +1004,19 @@ export type ReadinessCompletionReport = {
   dispatch_restart_smoke_latest_run_id: string;
   dispatch_restart_smoke_passed_count: number;
   dispatch_restart_smoke_failed_count: number;
+  ornith_preflight_warning_count: number;
+  ornith_preflight_block_count: number;
+  ornith_preflight_reorient_count: number;
+  self_scaffold_status: string;
+  self_scaffold_pending_review_count: number;
+  self_scaffold_review_count: number;
+  self_scaffold_reviewed_change_count: number;
+  self_scaffold_latest_review_event_id: number;
+  source_visible_required_label_count: number;
+  source_visible_matched_label_count: number;
+  readiness_proof_source_ref_count: number;
+  readiness_proof_source_ref_labels: string[];
+  source_visible_missing_ref_labels: string[];
   required_verified_count: number;
   verified_count: number;
   partial_count: number;
@@ -681,6 +1052,13 @@ export type ReadinessRehearsalReport = {
   refused_event_id: number;
   accepted_event_id: number;
   completed_event_id: number;
+  self_scaffold_reviewed: boolean;
+  self_scaffold_review_event_id: number;
+  self_scaffold_reviewed_change_count: number;
+  post_review_handoff_goal_preserved: boolean;
+  post_review_handoff_next_action_preserved: boolean;
+  post_review_resume_prompt_goal_preserved: boolean;
+  post_review_resume_prompt_next_action_preserved: boolean;
   compact_context_tokens: number;
   compact_context_sections: string[];
   replay_attached: boolean;
@@ -703,6 +1081,13 @@ export type ReadinessRehearsalLedgerEntry = {
   refused_event_id: number;
   accepted_event_id: number;
   completed_event_id: number;
+  self_scaffold_reviewed: boolean;
+  self_scaffold_review_event_id: number;
+  self_scaffold_reviewed_change_count: number;
+  post_review_handoff_goal_preserved: boolean;
+  post_review_handoff_next_action_preserved: boolean;
+  post_review_resume_prompt_goal_preserved: boolean;
+  post_review_resume_prompt_next_action_preserved: boolean;
   step_count: number;
   passed_steps: number;
   failed_steps: number;
@@ -722,6 +1107,91 @@ export type ReadinessRehearsalLedgerReport = {
   next_action: string;
 };
 
+export type ReadinessProofSourceRef = {
+  id: string;
+  kind: "web_source" | "browser_snapshot" | "desktop_snapshot";
+  evidence_label: string;
+  title: string;
+  target: string;
+  linked_criteria: string[];
+  citation: string;
+};
+
+export type ReadinessProofHistoryRecord = {
+  event_id: number;
+  timestamp: string;
+  source: "rehearsal_step" | "operator_event" | "claim_event" | "report";
+  proof_type:
+    | "self_scaffold_review"
+    | "post_review_handoff"
+    | "resume_prompt_preservation"
+    | "readiness_claim"
+    | "readiness_rehearsal";
+  status: "pass" | "warn" | "block" | "info";
+  step_id: string;
+  summary: string;
+  evidence: string[];
+  run_status: string;
+  milestone: string;
+  source_refs: ReadinessProofSourceRef[];
+};
+
+export type ReadinessProofHistoryReport = {
+  run_id: string;
+  generated_at: string;
+  status: "empty" | "partial" | "complete" | "needs_attention";
+  total_count: number;
+  self_scaffold_review_count: number;
+  post_review_handoff_count: number;
+  resume_prompt_preservation_count: number;
+  readiness_claim_count: number;
+  blocking_count: number;
+  source_evidence_ref_count: number;
+  source_evidence_labels: string[];
+  source_evidence_summary: string;
+  latest_event_id: number;
+  latest_summary: string;
+  summary: string;
+  recommended_action: string;
+  entries: ReadinessProofHistoryRecord[];
+};
+export type ReadinessSourceRefLabelPreview = {
+  label: string;
+  source_visible: boolean;
+  acceptance_required: boolean;
+  acceptance_matched: boolean;
+  present_in_source_evidence: boolean;
+  present_in_proof_history: boolean;
+  missing_from_source_evidence: boolean;
+  missing_from_proof_history: boolean;
+  source_evidence_count: number;
+  proof_ref_count: number;
+  linked_criteria: string[];
+  source_evidence_titles: string[];
+  proof_ref_titles: string[];
+};
+
+export type ReadinessSourceRefPreviewReport = {
+  run_id: string;
+  generated_at: string;
+  status: "not_applicable" | "ready" | "missing_source_evidence" | "missing_proof_refs";
+  summary: string;
+  recommended_action: string;
+  readiness_completion_status: string;
+  readiness_proof_history_status: string;
+  source_visible_labels: string[];
+  acceptance_required_labels: string[];
+  acceptance_matched_labels: string[];
+  source_evidence_labels: string[];
+  proof_ref_labels: string[];
+  missing_source_evidence_labels: string[];
+  missing_proof_ref_labels: string[];
+  source_evidence_entry_count: number;
+  proof_ref_count: number;
+  labels: ReadinessSourceRefLabelPreview[];
+  source_evidence_entries: SourceEvidencePreviewEntry[];
+  proof_refs: ReadinessProofSourceRef[];
+};
 export type OrnithLaunchChecklistItem = {
   id: string;
   category: string;
@@ -746,6 +1216,10 @@ export type OrnithLaunchChecklistReport = {
   browser_enabled: boolean;
   desktop_enabled: boolean;
   context_pressure: string;
+  context_snapshot: ContextSnapshot;
+  resume_prompt_quality: ResumePromptQualityReport;
+  resume_handoff_diff: ResumeHandoffDiffReport;
+  checkpoint_quality: CheckpointQualityReport;
   context_tokens: number;
   context_target_tokens: number;
   pending_approval_count: number;
@@ -776,6 +1250,58 @@ export type PolicySimulationReport = {
   blocking_signals: string[];
   run_health: RunHealthReport;
   completion_audit: CompletionAuditReport;
+};
+
+export type ResumePromptQualityIssue = {
+  id: string;
+  severity: "info" | "warning" | "blocker";
+  summary: string;
+  evidence: string[];
+  next_action: string;
+};
+
+export type ResumePromptQualityReport = {
+  run_id: string;
+  generated_at: string;
+  status: "ready" | "needs_refresh" | "blocked";
+  ready_to_resume: boolean;
+  score: number;
+  summary: string;
+  prompt_chars: number;
+  next_action: string;
+  concrete_next_action: boolean;
+  has_goal_anchor: boolean;
+  has_context_anchor: boolean;
+  has_action_context: boolean;
+  has_evidence_refs: boolean;
+  context_coverage_status: string;
+  recommended_action: string;
+  issues: ResumePromptQualityIssue[];
+};
+
+export type ResumeHandoffDiffChange = {
+  id: string;
+  severity: "info" | "warning" | "blocker";
+  field: string;
+  accepted: string;
+  current: string;
+  summary: string;
+};
+
+export type ResumeHandoffDiffReport = {
+  run_id: string;
+  generated_at: string;
+  status: "no_baseline" | "stable" | "changed" | "blocked";
+  ready_to_continue: boolean;
+  latest_accepted_event_id: number;
+  latest_accepted_at: string;
+  latest_accepted_source: string;
+  changed_count: number;
+  blocker_count: number;
+  warning_count: number;
+  summary: string;
+  recommended_action: string;
+  changes: ResumeHandoffDiffChange[];
 };
 
 export type ResumeDecisionRecord = {
@@ -952,6 +1478,29 @@ export type AutonomyDecisionReport = {
   decisions: AutonomyDecisionRecord[];
 };
 
+export type GitCheckpointReport = {
+  run_id: string;
+  generated_at: string;
+  status: "unknown" | "not_repo" | "needs_remote" | "verify_first" | "commit_recommended" | "push_recommended" | "clean";
+  workspace_path: string;
+  repo_root: string;
+  branch: string;
+  head_sha: string;
+  last_commit: string;
+  remote_names: string[];
+  remote_count: number;
+  github_remote_count: number;
+  staged_count: number;
+  modified_count: number;
+  untracked_count: number;
+  changed_count: number;
+  ahead_count: number;
+  behind_count: number;
+  recent_verification: string;
+  summary: string;
+  recommended_action: string;
+};
+
 export type GoalEvolutionDecisionRecord = {
   id: string;
   status: "pending" | "accepted" | "rejected" | "unchanged";
@@ -1028,8 +1577,31 @@ export type OperatorDispatchLedgerEntry = {
   action_summary: string;
   ui_target: string;
   approval_id: number;
+  approval_kind: string;
+  endpoint: string;
+  details: string[];
   message: string;
   note_supplied: boolean;
+};
+
+export type OperatorApprovalHistory = {
+  approval_id: number;
+  run_id: string;
+  event_count: number;
+  reviewed_count: number;
+  confirmation_required_count: number;
+  dispatched_count: number;
+  blocked_count: number;
+  latest_event_id: number;
+  latest_timestamp: string;
+  latest_status: string;
+  latest_decision: string;
+  action_reason: string;
+  action_title: string;
+  action_summary: string;
+  approval_kind: string;
+  ui_target: string;
+  sequence: string[];
 };
 
 export type OperatorDispatchLedgerReport = {
@@ -1043,6 +1615,17 @@ export type OperatorDispatchLedgerReport = {
   latest_action: string;
   summary: string;
   recommended_action: string;
+  approval_history_count: number;
+  unresolved_approval_history_count: number;
+  promotion_route_count: number;
+  promotion_approval_route_count: number;
+  promotion_approval_history_count: number;
+  unresolved_promotion_approval_history_count: number;
+  approval_histories: OperatorApprovalHistory[];
+  unresolved_approval_histories: OperatorApprovalHistory[];
+  promotion_approval_histories: OperatorApprovalHistory[];
+  unresolved_promotion_approval_histories: OperatorApprovalHistory[];
+  promotion_routes: OperatorDispatchLedgerEntry[];
   entries: OperatorDispatchLedgerEntry[];
 };
 
@@ -1076,6 +1659,31 @@ export type OrnithPreflightActionLedgerReport = {
   summary: string;
   recommended_action: string;
   entries: OrnithPreflightActionLedgerEntry[];
+};
+export type OrnithPreflightWarningRecord = {
+  event_id: number;
+  timestamp: string;
+  source: string;
+  item_id: string;
+  status: "warn" | "block";
+  summary: string;
+  evidence: string[];
+  next_action: string;
+  message: string;
+};
+
+export type OrnithPreflightWarningReport = {
+  run_id: string;
+  generated_at: string;
+  total_count: number;
+  warning_count: number;
+  block_count: number;
+  action_context_reorient_count: number;
+  latest_reorient_event_id: number;
+  latest_warning: string;
+  summary: string;
+  recommended_action: string;
+  entries: OrnithPreflightWarningRecord[];
 };
 export type OperatorDispatchRestartSmokeReport = {
   run_id: string;
@@ -1127,10 +1735,24 @@ export type OperatorDispatchRestartSmokeLedgerReport = {
   next_action: string;
 };
 
+export type ApprovalReviewSummary = {
+  id: number;
+  status: "pending" | "approved" | "rejected";
+  action_kind: string;
+  summary: string;
+  reviewed: boolean;
+  review_count: number;
+  latest_reviewed_at: string;
+  latest_review_event_id: number;
+  high_risk: boolean;
+  files: string[];
+};
+
 export type HandoffBundle = {
   original_goal: string;
   current_objective: string;
   goal_evolution: GoalEvolutionReport;
+  git_checkpoint: GitCheckpointReport;
   plan: string[];
   completed_work: string[];
   next_action: string;
@@ -1139,7 +1761,21 @@ export type HandoffBundle = {
   web_sources: WebSource[];
   desktop_state: DesktopSnapshot[];
   source_evidence: SourceEvidencePreviewReport;
+  readiness_source_ref_preview: ReadinessSourceRefPreviewReport;
+  desktop_effect_proof: DesktopEffectProofReport;
+  desktop_effect_proof_repairs: DesktopEffectProofRepairReport;
   action_context: ActionContextPack;
+  self_scaffold: SelfScaffoldReport;
+  self_scaffold_reviews: SelfScaffoldReviewReport;
+  self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport;
+  context_snapshot: ContextSnapshot;
+  resume_prompt_quality: ResumePromptQualityReport;
+  resume_handoff_diff: ResumeHandoffDiffReport;
+  checkpoint_quality: CheckpointQualityReport;
+  checkpoint_quality_resumes: CheckpointQualityResumeReport;
+  promotion_audit: PromotionAuditReport;
+  promotion_verification: PromotionVerificationReport;
+  promotion_repair: PromotionRepairReport;
   current_task_id: string;
   task_graph: TaskNode[];
   repo_map_summary: string;
@@ -1153,6 +1789,7 @@ export type HandoffBundle = {
   model_profile_adaptation_reviews: ModelProfileAdaptationReviewSummary[];
   unresolved_blockers: string[];
   approvals: string[];
+  approval_reviews: ApprovalReviewSummary[];
   acceptance_criteria: string[];
   acceptance_evidence: AcceptanceCriterionEvidence[];
   acceptance_recommendations: AcceptanceEvidenceRecommendation[];
@@ -1163,6 +1800,7 @@ export type HandoffBundle = {
   resume_decisions: ResumeDecisionReport;
   run_progress: RunProgressReport;
   report_integrity: ReportIntegrityReport;
+  report_integrity_refreshes: ReportIntegrityRefreshRecord[];
   objective_readiness: ObjectiveReadinessReport;
   objective_readiness_proof_outcomes: ObjectiveReadinessProofOutcome[];
   readiness_completion: ReadinessCompletionReport;
@@ -1177,6 +1815,8 @@ export type HandoffBundle = {
   operator_dispatch_restart_smoke: OperatorDispatchRestartSmokeReport;
   ornith_preflight: OrnithLaunchChecklistReport;
   ornith_preflight_actions: OrnithPreflightActionLedgerReport;
+  ornith_preflight_warnings: OrnithPreflightWarningReport;
+  readiness_proof_history: ReadinessProofHistoryReport;
   resume_prompt: string;
 };
 
@@ -1196,6 +1836,10 @@ export type ReplayApproval = {
   reason: string;
   created_at: string;
   resolved_at: string | null;
+  reviewed: boolean;
+  review_count: number;
+  latest_reviewed_at: string;
+  latest_review_event_id: number;
   preview_summary: string;
   preview_files: string[];
 };
@@ -1210,14 +1854,29 @@ export type ReplayBundle = {
   original_goal: string;
   active_goal: string;
   goal_evolution: GoalEvolutionReport;
+  git_checkpoint: GitCheckpointReport;
   milestone: string;
   next_action: string;
   context_pressure: string;
+  context_snapshot: ContextSnapshot;
+  resume_prompt_quality: ResumePromptQualityReport;
+  resume_handoff_diff: ResumeHandoffDiffReport;
+  checkpoint_quality: CheckpointQualityReport;
+  checkpoint_quality_resumes: CheckpointQualityResumeReport;
+  promotion_audit: PromotionAuditReport;
+  promotion_verification: PromotionVerificationReport;
+  promotion_repair: PromotionRepairReport;
   handoff: HandoffBundle;
   event_count: number;
   approval_count: number;
   source_evidence: SourceEvidencePreviewReport;
+  readiness_source_ref_preview: ReadinessSourceRefPreviewReport;
+  desktop_effect_proof: DesktopEffectProofReport;
+  desktop_effect_proof_repairs: DesktopEffectProofRepairReport;
   action_context: ActionContextPack;
+  self_scaffold: SelfScaffoldReport;
+  self_scaffold_reviews: SelfScaffoldReviewReport;
+  self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport;
   events: ReplayEvent[];
   approvals: ReplayApproval[];
   acceptance_evidence: AcceptanceCriterionEvidence[];
@@ -1229,6 +1888,7 @@ export type ReplayBundle = {
   resume_decisions: ResumeDecisionReport;
   run_progress: RunProgressReport;
   report_integrity: ReportIntegrityReport;
+  report_integrity_refreshes: ReportIntegrityRefreshRecord[];
   objective_readiness: ObjectiveReadinessReport;
   objective_readiness_proof_outcomes: ObjectiveReadinessProofOutcome[];
   readiness_completion: ReadinessCompletionReport;
@@ -1243,6 +1903,8 @@ export type ReplayBundle = {
   operator_dispatch_restart_smoke: OperatorDispatchRestartSmokeReport;
   ornith_preflight: OrnithLaunchChecklistReport;
   ornith_preflight_actions: OrnithPreflightActionLedgerReport;
+  ornith_preflight_warnings: OrnithPreflightWarningReport;
+  readiness_proof_history: ReadinessProofHistoryReport;
   task_graph: TaskNode[];
   tool_calls: ToolCallRecord[];
   model_interactions: ModelInteractionRecord[];
@@ -1288,6 +1950,25 @@ export type ApprovalRecord = {
   resolved_at: string | null;
 };
 
+export type ApprovalReviewRecord = {
+  id: number;
+  run_id: string;
+  status: "pending" | "approved" | "rejected";
+  action_kind: string;
+  reason: string;
+  created_at: string;
+  resolved_at: string | null;
+  summary: string;
+  preview: Record<string, unknown>;
+  files: string[];
+  payload_keys: string[];
+  high_risk: boolean;
+  reviewed: boolean;
+  review_count: number;
+  latest_reviewed_at: string;
+  latest_review_event_id: number;
+};
+
 export type OperatorActionQueueItem = {
   id: string;
   run_id: string;
@@ -1303,6 +1984,7 @@ export type OperatorActionQueueItem = {
   endpoint: string;
   method: string;
   ui_target: string;
+  promotion_gate: boolean;
   details: string[];
 };
 
@@ -1313,7 +1995,16 @@ export type OperatorActionQueueReport = {
   watch_count: number;
   approval_count: number;
   smoke_count: number;
+  readiness_proof_history_count: number;
+  readiness_source_ref_count: number;
+  desktop_effect_proof_count: number;
   preflight_count: number;
+  checkpoint_quality_count: number;
+  promotion_count: number;
+  promotion_approval_count: number;
+  self_scaffold_count: number;
+  self_scaffold_rollback_count: number;
+  goal_confirmation_count: number;
   recovery_count: number;
   blocker_count: number;
   summary: string;
@@ -1353,18 +2044,82 @@ export type SupervisorRunRecord = {
   lease_live: boolean;
   lease_expires_at: string;
   run_health: RunHealthReport;
+  report_integrity: ReportIntegrityReport;
+  report_integrity_status: string;
+  report_integrity_desktop_effect_proof_requires_attention: boolean;
+  report_integrity_desktop_effect_proof_detail: string;
   policy_simulation: PolicySimulationReport;
   run_progress: RunProgressReport;
+  goal_evolution: GoalEvolutionReport;
+  goal_confirmation_requires_attention: boolean;
+  goal_confirmation_action: string;
+  goal_confirmation_proposed_goal: string;
+  goal_confirmation_reason: string;
+  goal_confirmation_approval_count: number;
   objective_readiness: ObjectiveReadinessReport;
   objective_readiness_action: string;
+  action_readiness: ActionReadinessReport;
+  action_readiness_decisions: ActionReadinessDecisionReport;
+  action_readiness_status: string;
+  action_readiness_ready: boolean;
+  action_readiness_action: string;
+  action_readiness_suggested_tool: string;
+  action_readiness_suggested_label: string;
+  desktop_effect_proof_requires_attention: boolean;
+  desktop_effect_proof_action: string;
+  desktop_effect_proof_after_tool: string;
+  desktop_effect_proof_tool: string;
+  desktop_effect_proof_detail: string;
   source_evidence: SourceEvidencePreviewReport;
   source_evidence_requires_attention: boolean;
   source_evidence_action: string;
+  promotion_audit: PromotionAuditReport;
+  promotion_audit_requires_attention: boolean;
+  promotion_audit_action: string;
+  self_scaffold: SelfScaffoldReport;
+  self_scaffold_reviews: SelfScaffoldReviewReport;
+  self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport;
+  self_scaffold_rollback_requires_attention: boolean;
+  self_scaffold_rollback_action: string;
+  self_scaffold_rollback_patch_count: number;
+  self_scaffold_rollback_latest_review_event_id: number;
+  self_scaffold_status: string;
+  self_scaffold_requires_attention: boolean;
+  self_scaffold_action: string;
+  self_scaffold_latest_change: string;
   readiness_smoke_required: boolean;
   readiness_smoke_status: string;
   readiness_smoke_action: string;
   readiness_smoke_latest_run_id: string;
   readiness_smoke_requires_attention: boolean;
+  readiness_smoke_proof_status: string;
+  readiness_smoke_proof_detail: string;
+  readiness_smoke_self_scaffold_reviewed: boolean;
+  readiness_smoke_post_review_handoff_preserved: boolean;
+  readiness_proof_history: ReadinessProofHistoryReport;
+  readiness_proof_history_status: string;
+  readiness_proof_history_detail: string;
+  readiness_proof_history_action: string;
+  readiness_proof_history_requires_attention: boolean;
+  readiness_proof_history_self_scaffold_review_count: number;
+  readiness_proof_history_post_review_handoff_count: number;
+  readiness_proof_history_resume_prompt_preservation_count: number;
+  readiness_proof_history_readiness_claim_count: number;
+  readiness_completion: ReadinessCompletionReport;
+  readiness_source_refs_requires_attention: boolean;
+  readiness_source_refs_action: string;
+  readiness_source_refs_missing_labels: string[];
+  readiness_source_refs_count: number;
+  readiness_source_refs_labels: string[];
+  readiness_source_ref_preview: ReadinessSourceRefPreviewReport;
+  readiness_source_ref_preview_status: string;
+  readiness_source_ref_preview_action: string;
+  readiness_source_ref_preview_missing_evidence_labels: string[];
+  readiness_source_ref_preview_missing_proof_labels: string[];
+  readiness_source_ref_preview_source_labels: string[];
+  readiness_source_ref_preview_proof_labels: string[];
+  readiness_source_ref_preview_source_count: number;
+  readiness_source_ref_preview_proof_count: number;
   operator_dispatch_restart_smoke_required: boolean;
   operator_dispatch_restart_smoke_status: string;
   operator_dispatch_restart_smoke_action: string;
@@ -1373,6 +2128,9 @@ export type SupervisorRunRecord = {
   ornith_preflight: OrnithLaunchChecklistReport;
   ornith_preflight_status: string;
   ornith_preflight_requires_attention: boolean;
+  checkpoint_quality: CheckpointQualityReport;
+  checkpoint_quality_requires_attention: boolean;
+  checkpoint_quality_action: string;
   operator_attention_required: boolean;
   operator_attention_reasons: string[];
   operator_attention_action: string;
@@ -1394,9 +2152,19 @@ export type SupervisorReport = {
   readiness_rehearsal_ledger: ReadinessRehearsalLedgerReport;
   operator_dispatch_restart_smoke_ledger: OperatorDispatchRestartSmokeLedgerReport;
   readiness_smoke_attention_count: number;
+  readiness_proof_history_attention_count: number;
+  readiness_source_ref_attention_count: number;
+  desktop_effect_proof_attention_count: number;
   operator_dispatch_restart_smoke_attention_count: number;
   ornith_preflight_attention_count: number;
+  checkpoint_quality_attention_count: number;
   source_evidence_attention_count: number;
+  promotion_audit_attention_count: number;
+  self_scaffold_attention_count: number;
+  self_scaffold_rollback_attention_count: number;
+  action_readiness_attention_count: number;
+  action_readiness_blocked_count: number;
+  goal_confirmation_attention_count: number;
   pending_approval_count: number;
   operator_recovery_count: number;
   operator_blocker_count: number;
@@ -1424,6 +2192,18 @@ export type ModelProfile = {
   default_temperature: number;
   configured_model: string;
   effective_context_target_tokens: number;
+};
+
+export type ModelConnectionHealth = {
+  ok: boolean;
+  status: "ok" | "error" | "timeout";
+  model: string;
+  base_url: string;
+  endpoint: string;
+  timeout_seconds: number;
+  latency_ms: number;
+  response_excerpt: string;
+  error: string;
 };
 
 export type ModelEvalCaseResult = {
@@ -1541,10 +2321,59 @@ export type ModelProfileAdaptationReviewSummary = {
   created_at: string;
 };
 
+function requestHeaders(headers?: HeadersInit): Record<string, string> {
+  const normalized: Record<string, string> = { "Content-Type": "application/json" };
+  if (!headers) return normalized;
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      normalized[key] = value;
+    });
+    return normalized;
+  }
+  if (Array.isArray(headers)) {
+    headers.forEach(([key, value]) => {
+      normalized[key] = value;
+    });
+    return normalized;
+  }
+  return { ...normalized, ...headers };
+}
+
+function apiViaXhr<T>(path: string, init?: RequestInit): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(init?.method ?? "GET", `${API_BASE}${path}`);
+    Object.entries(requestHeaders(init?.headers)).forEach(([key, value]) => {
+      xhr.setRequestHeader(key, value);
+    });
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(`${xhr.status} ${xhr.statusText || xhr.responseText}`));
+        return;
+      }
+      try {
+        resolve(xhr.responseText ? (JSON.parse(xhr.responseText) as T) : (undefined as T));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network request failed"));
+    const body = init?.body ?? null;
+    if (body && typeof body !== "string") {
+      reject(new Error("XHR fallback only supports string request bodies."));
+      return;
+    }
+    xhr.send(body);
+  });
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  if (typeof fetch !== "function") {
+    return apiViaXhr<T>(path, init);
+  }
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
+    headers: requestHeaders(init?.headers),
   });
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);

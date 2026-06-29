@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Literal
 
@@ -260,6 +260,56 @@ class DesktopSnapshot(BaseModel):
     summary: str = ""
 
 
+class DesktopEffectProofReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["not_required", "needs_proof", "proof_available"] = "not_required"
+    requires_attention: bool = False
+    latest_action_id: str = ""
+    latest_action_tool: str = ""
+    latest_action_created_at: str = ""
+    latest_action_summary: str = ""
+    proof_call_id: str = ""
+    proof_tool: str = ""
+    proof_created_at: str = ""
+    proof_summary: str = ""
+    proof_snapshot: DesktopSnapshot | None = None
+    proof_snapshot_count: int = 0
+    ledger: list[str] = Field(default_factory=list)
+    recommended_action: str = ""
+
+
+
+class DesktopEffectProofRepairRecord(BaseModel):
+    event_id: int = 0
+    timestamp: str = ""
+    outcome: Literal["metadata_refreshed", "capture_completed", "capture_failed", "blocked", "skipped_noop"] = "skipped_noop"
+    previous_integrity_status: str = ""
+    refreshed_integrity_status: str = ""
+    previous_proof_status: str = ""
+    refreshed_proof_status: str = ""
+    latest_action_id: str = ""
+    proof_call_id: str = ""
+    proof_snapshot_id: str = ""
+    reason_count: int = 0
+    reasons: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class DesktopEffectProofRepairReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    total_count: int = 0
+    metadata_refreshed_count: int = 0
+    capture_completed_count: int = 0
+    capture_failed_count: int = 0
+    blocked_count: int = 0
+    skipped_noop_count: int = 0
+    latest_outcome: str = ""
+    summary: str = "No desktop effect proof repair outcomes recorded."
+    recommended_action: str = ""
+    entries: list[DesktopEffectProofRepairRecord] = Field(default_factory=list)
+
 class SourceEvidencePreviewEntry(BaseModel):
     id: str = ""
     kind: Literal["web_source", "browser_snapshot", "desktop_snapshot"] = "web_source"
@@ -384,6 +434,96 @@ class PatchApplication(BaseModel):
     rolled_back_at: str = ""
 
 
+class PromotionAuditIssue(BaseModel):
+    id: str
+    severity: Literal["info", "warning", "blocker"] = "info"
+    summary: str
+    evidence: list[str] = Field(default_factory=list)
+    next_action: str = ""
+
+
+class PromotionAuditReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["ready", "needs_verification", "blocked", "not_applicable"] = "not_applicable"
+    ready_to_promote: bool = False
+    changed_file_count: int = 0
+    patch_proposal_count: int = 0
+    patch_application_count: int = 0
+    promotion_count: int = 0
+    pending_patch_count: int = 0
+    pending_approval_count: int = 0
+    unresolved_approval_history_count: int = 0
+    unresolved_approval_histories: list[str] = Field(default_factory=list)
+    latest_verification: str = ""
+    workspace_diff_status: str = ""
+    workspace_diff_summary: str = ""
+    resume_drift_status: str = ""
+    git_checkpoint_status: str = ""
+    summary: str = ""
+    recommended_action: str = ""
+    issues: list[PromotionAuditIssue] = Field(default_factory=list)
+
+
+class PromotionVerificationAttemptRecord(BaseModel):
+    event_id: int = 0
+    timestamp: str = ""
+    command: str = ""
+    ok: bool = False
+    audit_status: str = ""
+    summary: str = ""
+    tool_ok: bool = False
+    selected_alternate: bool = False
+    returncode: int = 0
+    failure_kind: str = ""
+    suspected_file: str = ""
+    suspected_line: int = 0
+    repair_hint: str = ""
+    evidence_excerpt: str = ""
+
+
+class PromotionVerificationReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["none", "ready", "needs_retry", "repeated_failure"] = "none"
+    attempt_count: int = 0
+    failed_count: int = 0
+    success_count: int = 0
+    repeated_failure_count: int = 0
+    repair_hint_count: int = 0
+    latest_attempt: PromotionVerificationAttemptRecord = Field(default_factory=PromotionVerificationAttemptRecord)
+    latest_failed_command: str = ""
+    latest_failure_kind: str = ""
+    latest_suspected_file: str = ""
+    latest_repair_hint: str = ""
+    next_command: str = ""
+    should_use_alternate: bool = False
+    failure_kinds: list[str] = Field(default_factory=list)
+    summary: str = ""
+    recommended_action: str = ""
+    attempts: list[PromotionVerificationAttemptRecord] = Field(default_factory=list)
+
+class PromotionRepairReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    phase: Literal["none", "needs_file_read", "needs_patch_proposal", "patch_proposed", "ready_to_verify"] = "none"
+    active: bool = False
+    target_file: str = ""
+    target_line: int = 0
+    failure_kind: str = ""
+    repair_hint: str = ""
+    evidence_excerpt: str = ""
+    latest_failed_command: str = ""
+    file_read: bool = False
+    file_read_tool_id: str = ""
+    file_excerpt_chars: int = 0
+    patch_proposal_id: str = ""
+    patch_status: str = ""
+    patch_application_id: str = ""
+    next_tool: str = ""
+    next_action: str = ""
+    next_verification_command: str = ""
+    summary: str = ""
 class FailureRecord(BaseModel):
     id: str
     kind: str
@@ -392,6 +532,10 @@ class FailureRecord(BaseModel):
     count: int = 1
     last_seen: str = ""
     recovery_hint: str = ""
+    command: str = ""
+    target: str = ""
+    returncode: int | None = None
+    evidence_excerpt: str = ""
 
 
 class RecoveryPlan(BaseModel):
@@ -471,6 +615,30 @@ class GoalEvolutionReport(BaseModel):
     summary: str = ""
     recommended_action: str = ""
     decisions: list[GoalEvolutionDecisionRecord] = Field(default_factory=list)
+
+
+
+class GitCheckpointReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["unknown", "not_repo", "needs_remote", "verify_first", "commit_recommended", "push_recommended", "clean"] = "unknown"
+    workspace_path: str = ""
+    repo_root: str = ""
+    branch: str = ""
+    head_sha: str = ""
+    last_commit: str = ""
+    remote_names: list[str] = Field(default_factory=list)
+    remote_count: int = 0
+    github_remote_count: int = 0
+    staged_count: int = 0
+    modified_count: int = 0
+    untracked_count: int = 0
+    changed_count: int = 0
+    ahead_count: int = 0
+    behind_count: int = 0
+    recent_verification: str = ""
+    summary: str = ""
+    recommended_action: str = ""
 
 
 class RecoveryDecisionRecord(BaseModel):
@@ -588,12 +756,169 @@ class ContextBudget(BaseModel):
 
 
 class ContextSnapshot(BaseModel):
+    run_id: str = ""
     generated_at: str = ""
     estimated_tokens: int = 0
     sections: list[str] = Field(default_factory=list)
+    selected_section_count: int = 0
+    dropped_sections: list[str] = Field(default_factory=list)
+    dropped_section_count: int = 0
+    required_sections_missing: list[str] = Field(default_factory=list)
+    section_token_estimates: dict[str, int] = Field(default_factory=dict)
+    coverage_status: Literal["ok", "degraded", "critical"] = "ok"
+    recommended_action: str = ""
     prompt_preview: str = ""
 
 
+class ResumePromptQualityIssue(BaseModel):
+    id: str
+    severity: Literal["info", "warning", "blocker"] = "info"
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    next_action: str = ""
+
+
+class ResumePromptQualityReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["ready", "needs_refresh", "blocked"] = "needs_refresh"
+    ready_to_resume: bool = False
+    score: int = 0
+    summary: str = ""
+    prompt_chars: int = 0
+    next_action: str = ""
+    concrete_next_action: bool = False
+    has_goal_anchor: bool = False
+    has_context_anchor: bool = False
+    has_action_context: bool = False
+    has_evidence_refs: bool = False
+    context_coverage_status: str = ""
+    recommended_action: str = ""
+    issues: list[ResumePromptQualityIssue] = Field(default_factory=list)
+
+
+
+class ResumeHandoffDiffChange(BaseModel):
+    id: str
+    severity: Literal["info", "warning", "blocker"] = "info"
+    field: str = ""
+    accepted: str = ""
+    current: str = ""
+    summary: str = ""
+
+
+class ResumeHandoffDiffReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["no_baseline", "stable", "changed", "blocked"] = "no_baseline"
+    ready_to_continue: bool = True
+    latest_accepted_event_id: int = 0
+    latest_accepted_at: str = ""
+    latest_accepted_source: str = ""
+    changed_count: int = 0
+    blocker_count: int = 0
+    warning_count: int = 0
+    summary: str = ""
+    recommended_action: str = ""
+    changes: list[ResumeHandoffDiffChange] = Field(default_factory=list)
+
+class SelfScaffoldChangeRecord(BaseModel):
+    id: str = ""
+    kind: Literal["task_graph", "action_context", "tool_posture", "model_guard", "edit_evidence", "goal_evolution", "checkpoint", "event"] = "event"
+    status: Literal["observed", "active", "needs_review"] = "observed"
+    source: str = ""
+    structure_ref: str = ""
+    summary: str = ""
+    intent: str = ""
+    reversible: bool = True
+    reverse_hint: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    event_id: int = 0
+    created_at: str = ""
+
+
+class SelfScaffoldReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["empty", "observed", "needs_review"] = "empty"
+    change_count: int = 0
+    task_graph_count: int = 0
+    action_context_count: int = 0
+    tool_posture_count: int = 0
+    guard_count: int = 0
+    reversible_count: int = 0
+    review_count: int = 0
+    reviewed_change_count: int = 0
+    latest_reviewed_at: str = ""
+    latest_review_event_id: int = 0
+    latest_reviewed_change_ids: list[str] = Field(default_factory=list)
+    latest_change: str = ""
+    summary: str = "No self-scaffold change intent recorded."
+    recommended_action: str = ""
+    changes: list[SelfScaffoldChangeRecord] = Field(default_factory=list)
+
+
+class SelfScaffoldReviewRecord(BaseModel):
+    event_id: int = 0
+    timestamp: str = ""
+    status: Literal["accepted", "partial", "noop"] = "noop"
+    change_count: int = 0
+    guard_count: int = 0
+    reviewed_change_count: int = 0
+    reviewed_change_ids: list[str] = Field(default_factory=list)
+    remaining_goal_review: bool = False
+    action_reason: str = ""
+    action_summary: str = ""
+    summary: str = ""
+
+
+class SelfScaffoldReviewReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["none", "reviewed", "needs_goal_review"] = "none"
+    total_count: int = 0
+    accepted_count: int = 0
+    partial_count: int = 0
+    noop_count: int = 0
+    reviewed_change_count: int = 0
+    remaining_goal_review_count: int = 0
+    latest_event_id: int = 0
+    latest_reviewed_change_ids: list[str] = Field(default_factory=list)
+    summary: str = "No self-scaffold review outcomes recorded."
+    recommended_action: str = ""
+    entries: list[SelfScaffoldReviewRecord] = Field(default_factory=list)
+
+
+class SelfScaffoldRollbackIntentRecord(BaseModel):
+    id: str = ""
+    source_review_event_id: int = 0
+    reviewed_change_id: str = ""
+    change_kind: str = ""
+    action_kind: Literal["steer", "patch_rollback", "patch_review", "handoff_refresh", "goal_review"] = "steer"
+    status: Literal["suggested", "needs_approval", "resolved", "stale"] = "suggested"
+    proposed_tool: str = ""
+    requires_approval: bool = False
+    mutation_automatic: bool = False
+    patch_id: str = ""
+    backup_id: str = ""
+    rollback_manifest_path: str = ""
+    files: list[str] = Field(default_factory=list)
+    reverse_hint: str = ""
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+
+class SelfScaffoldRollbackIntentReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["none", "available", "needs_approval", "resolved"] = "none"
+    intent_count: int = 0
+    patch_rollback_count: int = 0
+    steering_count: int = 0
+    latest_review_event_id: int = 0
+    summary: str = "No accepted self-scaffold reverse hints have produced rollback or steering intent yet."
+    recommended_action: str = "Continue; use self-scaffold reverse hints if accepted guard posture proves wrong."
+    entries: list[SelfScaffoldRollbackIntentRecord] = Field(default_factory=list)
 
 class ActionContextPack(BaseModel):
     run_id: str = ""
@@ -601,6 +926,10 @@ class ActionContextPack(BaseModel):
     milestone: str = ""
     current_task_id: str = ""
     current_task_title: str = ""
+    task_transition_ledger: list[str] = Field(default_factory=list)
+    model_guard_ledger: list[str] = Field(default_factory=list)
+    edit_evidence_ledger: list[str] = Field(default_factory=list)
+    desktop_supervision_ledger: list[str] = Field(default_factory=list)
     action_readiness_status: str = ""
     selected_tool: str = ""
     selected_label: str = ""
@@ -611,10 +940,18 @@ class ActionContextPack(BaseModel):
     source_evidence_summary: str = ""
     missing_source_labels: list[str] = Field(default_factory=list)
     latest_source_evidence: str = ""
+    readiness_source_ref_status: str = ""
+    readiness_source_ref_action: str = ""
+    readiness_source_ref_missing_evidence_labels: list[str] = Field(default_factory=list)
+    readiness_source_ref_missing_proof_labels: list[str] = Field(default_factory=list)
+    readiness_source_ref_source_labels: list[str] = Field(default_factory=list)
+    readiness_source_ref_proof_labels: list[str] = Field(default_factory=list)
     recent_verified_commands: list[str] = Field(default_factory=list)
     recent_verified_files: list[str] = Field(default_factory=list)
     recent_successes: list[str] = Field(default_factory=list)
     failure_ledger: list[str] = Field(default_factory=list)
+    resolved_failure_ledger: list[str] = Field(default_factory=list)
+    promotion_repair_hints: list[str] = Field(default_factory=list)
     recovery_hint: str = ""
     context_budget: str = ""
     compact_prompt: str = ""
@@ -634,6 +971,71 @@ class RunHealthReport(BaseModel):
     summary: str = ""
     signals: list[RunHealthSignal] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+
+
+class CheckpointQualityIssue(BaseModel):
+    id: str = ""
+    severity: Literal["warning", "blocker"] = "warning"
+    summary: str = ""
+    evidence: str = ""
+    recommended_action: str = ""
+
+
+class CheckpointQualityReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["unknown", "ready", "needs_checkpoint", "blocked"] = "unknown"
+    run_note_present: bool = False
+    run_note_path: str = ""
+    run_note_chars: int = 0
+    has_checkpoint_heading: bool = False
+    has_active_goal: bool = False
+    has_current_step: bool = False
+    has_next_action: bool = False
+    has_resume_prompt: bool = False
+    has_no_raw_logs_instruction: bool = False
+    expected_report_integrity_refresh: bool = False
+    has_report_integrity_refresh: bool = False
+    expected_refresh_event_id: int = 0
+    expected_refresh_reason: str = ""
+    issue_count: int = 0
+    blocker_count: int = 0
+    warning_count: int = 0
+    summary: str = ""
+    recommended_action: str = ""
+    issues: list[CheckpointQualityIssue] = Field(default_factory=list)
+
+
+class CheckpointQualityResumeRecord(BaseModel):
+    repair_event_id: int = 0
+    repair_completed_event_id: int = 0
+    repair_timestamp: str = ""
+    repair_reason: str = ""
+    repair_ui_target: str = ""
+    repair_action: str = ""
+    resume_event_id: int = 0
+    resume_timestamp: str = ""
+    resume_source: str = ""
+    resume_accepted: bool | None = None
+    resume_policy_action: str = ""
+    resume_reason: str = ""
+    checkpoint_quality_status: str = ""
+    checkpoint_quality_ready: bool = False
+    summary: str = ""
+
+
+class CheckpointQualityResumeReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["none", "awaiting_resume", "resumed", "blocked"] = "none"
+    repair_count: int = 0
+    resumed_after_repair_count: int = 0
+    blocked_after_repair_count: int = 0
+    awaiting_resume_count: int = 0
+    latest: CheckpointQualityResumeRecord = Field(default_factory=CheckpointQualityResumeRecord)
+    summary: str = ""
+    recommended_action: str = ""
+    entries: list[CheckpointQualityResumeRecord] = Field(default_factory=list)
 
 
 class OrnithLaunchChecklistItem(BaseModel):
@@ -660,6 +1062,10 @@ class OrnithLaunchChecklistReport(BaseModel):
     browser_enabled: bool = False
     desktop_enabled: bool = False
     context_pressure: str = ""
+    context_snapshot: ContextSnapshot = Field(default_factory=ContextSnapshot)
+    resume_prompt_quality: ResumePromptQualityReport = Field(default_factory=ResumePromptQualityReport)
+    resume_handoff_diff: ResumeHandoffDiffReport = Field(default_factory=ResumeHandoffDiffReport)
+    checkpoint_quality: CheckpointQualityReport = Field(default_factory=CheckpointQualityReport)
     context_tokens: int = 0
     context_target_tokens: int = 0
     pending_approval_count: int = 0
@@ -730,6 +1136,8 @@ class ResumeDecisionReport(BaseModel):
     comparison_summary: str = ""
     recommended_action: str = ""
     decisions: list[ResumeDecisionRecord] = Field(default_factory=list)
+
+
 
 
 class ActionReadinessIssue(BaseModel):
@@ -922,6 +1330,19 @@ class ReportIntegrityReport(BaseModel):
     checks: list[ReportIntegrityCheck] = Field(default_factory=list)
 
 
+class ReportIntegrityRefreshRecord(BaseModel):
+    event_id: int = 0
+    timestamp: str = ""
+    report_status: str = ""
+    previous_report_status: str = ""
+    reason_count: int = 0
+    reasons: list[str] = Field(default_factory=list)
+    preflight_event_id: int = 0
+    preflight_event_kind: str = ""
+    preflight_accepted: bool | None = None
+    preflight_reason: str = ""
+
+
 class ObjectiveReadinessProof(BaseModel):
     tool_kind: str = ""
     evidence_label: str = ""
@@ -1012,6 +1433,19 @@ class ReadinessCompletionReport(BaseModel):
     dispatch_restart_smoke_latest_run_id: str = ""
     dispatch_restart_smoke_passed_count: int = 0
     dispatch_restart_smoke_failed_count: int = 0
+    ornith_preflight_warning_count: int = 0
+    ornith_preflight_block_count: int = 0
+    ornith_preflight_reorient_count: int = 0
+    self_scaffold_status: str = ""
+    self_scaffold_pending_review_count: int = 0
+    self_scaffold_review_count: int = 0
+    self_scaffold_reviewed_change_count: int = 0
+    self_scaffold_latest_review_event_id: int = 0
+    source_visible_required_label_count: int = 0
+    source_visible_matched_label_count: int = 0
+    readiness_proof_source_ref_count: int = 0
+    readiness_proof_source_ref_labels: list[str] = Field(default_factory=list)
+    source_visible_missing_ref_labels: list[str] = Field(default_factory=list)
     required_verified_count: int = 9
     verified_count: int = 0
     partial_count: int = 0
@@ -1047,6 +1481,13 @@ class ReadinessRehearsalReport(BaseModel):
     refused_event_id: int = 0
     accepted_event_id: int = 0
     completed_event_id: int = 0
+    self_scaffold_reviewed: bool = False
+    self_scaffold_review_event_id: int = 0
+    self_scaffold_reviewed_change_count: int = 0
+    post_review_handoff_goal_preserved: bool = False
+    post_review_handoff_next_action_preserved: bool = False
+    post_review_resume_prompt_goal_preserved: bool = False
+    post_review_resume_prompt_next_action_preserved: bool = False
     compact_context_tokens: int = 0
     compact_context_sections: list[str] = Field(default_factory=list)
     replay_attached: bool = False
@@ -1069,6 +1510,13 @@ class ReadinessRehearsalLedgerEntry(BaseModel):
     refused_event_id: int = 0
     accepted_event_id: int = 0
     completed_event_id: int = 0
+    self_scaffold_reviewed: bool = False
+    self_scaffold_review_event_id: int = 0
+    self_scaffold_reviewed_change_count: int = 0
+    post_review_handoff_goal_preserved: bool = False
+    post_review_handoff_next_action_preserved: bool = False
+    post_review_resume_prompt_goal_preserved: bool = False
+    post_review_resume_prompt_next_action_preserved: bool = False
     step_count: int = 0
     passed_steps: int = 0
     failed_steps: int = 0
@@ -1101,8 +1549,31 @@ class OperatorDispatchLedgerEntry(BaseModel):
     action_summary: str = ""
     ui_target: str = ""
     approval_id: int = 0
+    approval_kind: str = ""
+    endpoint: str = ""
+    details: list[str] = Field(default_factory=list)
     message: str = ""
     note_supplied: bool = False
+
+
+class OperatorApprovalHistory(BaseModel):
+    approval_id: int = 0
+    run_id: str = ""
+    event_count: int = 0
+    reviewed_count: int = 0
+    confirmation_required_count: int = 0
+    dispatched_count: int = 0
+    blocked_count: int = 0
+    latest_event_id: int = 0
+    latest_timestamp: str = ""
+    latest_status: str = ""
+    latest_decision: str = ""
+    action_reason: str = ""
+    action_title: str = ""
+    action_summary: str = ""
+    approval_kind: str = ""
+    ui_target: str = ""
+    sequence: list[str] = Field(default_factory=list)
 
 
 class OperatorDispatchLedgerReport(BaseModel):
@@ -1116,6 +1587,17 @@ class OperatorDispatchLedgerReport(BaseModel):
     latest_action: str = ""
     summary: str = ""
     recommended_action: str = ""
+    approval_history_count: int = 0
+    unresolved_approval_history_count: int = 0
+    promotion_route_count: int = 0
+    promotion_approval_route_count: int = 0
+    promotion_approval_history_count: int = 0
+    unresolved_promotion_approval_history_count: int = 0
+    approval_histories: list[OperatorApprovalHistory] = Field(default_factory=list)
+    unresolved_approval_histories: list[OperatorApprovalHistory] = Field(default_factory=list)
+    promotion_approval_histories: list[OperatorApprovalHistory] = Field(default_factory=list)
+    unresolved_promotion_approval_histories: list[OperatorApprovalHistory] = Field(default_factory=list)
+    promotion_routes: list[OperatorDispatchLedgerEntry] = Field(default_factory=list)
     entries: list[OperatorDispatchLedgerEntry] = Field(default_factory=list)
 
 
@@ -1149,6 +1631,111 @@ class OrnithPreflightActionLedgerReport(BaseModel):
     summary: str = ""
     recommended_action: str = ""
     entries: list[OrnithPreflightActionLedgerEntry] = Field(default_factory=list)
+
+class OrnithPreflightWarningRecord(BaseModel):
+    event_id: int = 0
+    timestamp: str = ""
+    source: str = "checklist"
+    item_id: str = ""
+    status: Literal["warn", "block"] = "warn"
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    next_action: str = ""
+    message: str = ""
+
+
+class OrnithPreflightWarningReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    total_count: int = 0
+    warning_count: int = 0
+    block_count: int = 0
+    action_context_reorient_count: int = 0
+    latest_reorient_event_id: int = 0
+    latest_warning: str = ""
+    summary: str = "No Ornith preflight warnings recorded."
+    recommended_action: str = ""
+    entries: list[OrnithPreflightWarningRecord] = Field(default_factory=list)
+
+class ReadinessProofSourceRef(BaseModel):
+    id: str = ""
+    kind: Literal["web_source", "browser_snapshot", "desktop_snapshot"] = "web_source"
+    evidence_label: str = ""
+    title: str = ""
+    target: str = ""
+    linked_criteria: list[str] = Field(default_factory=list)
+    citation: str = ""
+
+
+class ReadinessProofHistoryRecord(BaseModel):
+    event_id: int = 0
+    timestamp: str = ""
+    source: Literal["rehearsal_step", "operator_event", "claim_event", "report"] = "report"
+    proof_type: Literal["self_scaffold_review", "post_review_handoff", "resume_prompt_preservation", "readiness_claim", "readiness_rehearsal"] = "readiness_rehearsal"
+    status: Literal["pass", "warn", "block", "info"] = "info"
+    step_id: str = ""
+    summary: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    run_status: str = ""
+    milestone: str = ""
+    source_refs: list[ReadinessProofSourceRef] = Field(default_factory=list)
+
+
+class ReadinessProofHistoryReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["empty", "partial", "complete", "needs_attention"] = "empty"
+    total_count: int = 0
+    self_scaffold_review_count: int = 0
+    post_review_handoff_count: int = 0
+    resume_prompt_preservation_count: int = 0
+    readiness_claim_count: int = 0
+    blocking_count: int = 0
+    source_evidence_ref_count: int = 0
+    source_evidence_labels: list[str] = Field(default_factory=list)
+    source_evidence_summary: str = ""
+    latest_event_id: int = 0
+    latest_summary: str = ""
+    summary: str = "No readiness proof history recorded."
+    recommended_action: str = "Run the readiness rehearsal before trusting long-run readiness proof."
+    entries: list[ReadinessProofHistoryRecord] = Field(default_factory=list)
+
+class ReadinessSourceRefLabelPreview(BaseModel):
+    label: str = ""
+    source_visible: bool = False
+    acceptance_required: bool = False
+    acceptance_matched: bool = False
+    present_in_source_evidence: bool = False
+    present_in_proof_history: bool = False
+    missing_from_source_evidence: bool = False
+    missing_from_proof_history: bool = False
+    source_evidence_count: int = 0
+    proof_ref_count: int = 0
+    linked_criteria: list[str] = Field(default_factory=list)
+    source_evidence_titles: list[str] = Field(default_factory=list)
+    proof_ref_titles: list[str] = Field(default_factory=list)
+
+
+class ReadinessSourceRefPreviewReport(BaseModel):
+    run_id: str = ""
+    generated_at: str = ""
+    status: Literal["not_applicable", "ready", "missing_source_evidence", "missing_proof_refs"] = "not_applicable"
+    summary: str = "No source-visible readiness refs required."
+    recommended_action: str = ""
+    readiness_completion_status: str = ""
+    readiness_proof_history_status: str = ""
+    source_visible_labels: list[str] = Field(default_factory=list)
+    acceptance_required_labels: list[str] = Field(default_factory=list)
+    acceptance_matched_labels: list[str] = Field(default_factory=list)
+    source_evidence_labels: list[str] = Field(default_factory=list)
+    proof_ref_labels: list[str] = Field(default_factory=list)
+    missing_source_evidence_labels: list[str] = Field(default_factory=list)
+    missing_proof_ref_labels: list[str] = Field(default_factory=list)
+    source_evidence_entry_count: int = 0
+    proof_ref_count: int = 0
+    labels: list[ReadinessSourceRefLabelPreview] = Field(default_factory=list)
+    source_evidence_entries: list[SourceEvidencePreviewEntry] = Field(default_factory=list)
+    proof_refs: list[ReadinessProofSourceRef] = Field(default_factory=list)
 
 class OperatorDispatchRestartSmokeReport(BaseModel):
     run_id: str = ""
@@ -1200,10 +1787,24 @@ class OperatorDispatchRestartSmokeLedgerReport(BaseModel):
     next_action: str = "Run the operator-dispatch restart smoke before trusting dispatch handoff evidence after restart."
 
 
+class ApprovalReviewSummary(BaseModel):
+    id: int
+    status: Literal["pending", "approved", "rejected"] = "pending"
+    action_kind: str = ""
+    summary: str = ""
+    reviewed: bool = False
+    review_count: int = 0
+    latest_reviewed_at: str = ""
+    latest_review_event_id: int = 0
+    high_risk: bool = False
+    files: list[str] = Field(default_factory=list)
+
+
 class HandoffBundle(BaseModel):
     original_goal: str = ""
     current_objective: str = ""
     goal_evolution: GoalEvolutionReport = Field(default_factory=GoalEvolutionReport)
+    git_checkpoint: GitCheckpointReport = Field(default_factory=GitCheckpointReport)
     plan: list[str] = Field(default_factory=list)
     completed_work: list[str] = Field(default_factory=list)
     next_action: str = ""
@@ -1212,7 +1813,20 @@ class HandoffBundle(BaseModel):
     web_sources: list[WebSource] = Field(default_factory=list)
     desktop_state: list[DesktopSnapshot] = Field(default_factory=list)
     source_evidence: SourceEvidencePreviewReport = Field(default_factory=SourceEvidencePreviewReport)
+    readiness_source_ref_preview: ReadinessSourceRefPreviewReport = Field(
+        default_factory=ReadinessSourceRefPreviewReport
+    )
+    desktop_effect_proof: DesktopEffectProofReport = Field(default_factory=DesktopEffectProofReport)
+    desktop_effect_proof_repairs: DesktopEffectProofRepairReport = Field(default_factory=DesktopEffectProofRepairReport)
     action_context: ActionContextPack = Field(default_factory=ActionContextPack)
+    self_scaffold: SelfScaffoldReport = Field(default_factory=SelfScaffoldReport)
+    self_scaffold_reviews: SelfScaffoldReviewReport = Field(default_factory=SelfScaffoldReviewReport)
+    self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport = Field(default_factory=SelfScaffoldRollbackIntentReport)
+    context_snapshot: ContextSnapshot = Field(default_factory=ContextSnapshot)
+    resume_prompt_quality: ResumePromptQualityReport = Field(default_factory=ResumePromptQualityReport)
+    promotion_audit: PromotionAuditReport = Field(default_factory=PromotionAuditReport)
+    promotion_verification: PromotionVerificationReport = Field(default_factory=PromotionVerificationReport)
+    promotion_repair: PromotionRepairReport = Field(default_factory=PromotionRepairReport)
     current_task_id: str = ""
     task_graph: list[TaskNode] = Field(default_factory=list)
     repo_map_summary: str = ""
@@ -1221,11 +1835,13 @@ class HandoffBundle(BaseModel):
     workspace_promotions: list[WorkspacePromotion] = Field(default_factory=list)
     patch_proposals: list[PatchProposal] = Field(default_factory=list)
     patch_applications: list[PatchApplication] = Field(default_factory=list)
+    failure_records: list[FailureRecord] = Field(default_factory=list)
     recovery_summary: str = ""
     recovery_steps: list[str] = Field(default_factory=list)
     model_profile_adaptation_reviews: list[ModelProfileAdaptationReviewSummary] = Field(default_factory=list)
     unresolved_blockers: list[str] = Field(default_factory=list)
     approvals: list[str] = Field(default_factory=list)
+    approval_reviews: list[ApprovalReviewSummary] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
     acceptance_evidence: list[AcceptanceCriterionEvidence] = Field(default_factory=list)
     acceptance_recommendations: list[AcceptanceEvidenceRecommendation] = Field(default_factory=list)
@@ -1234,8 +1850,12 @@ class HandoffBundle(BaseModel):
     completion_audit: CompletionAuditReport = Field(default_factory=lambda: CompletionAuditReport(run_id=""))
     policy_simulation: PolicySimulationReport = Field(default_factory=PolicySimulationReport)
     resume_decisions: ResumeDecisionReport = Field(default_factory=ResumeDecisionReport)
+    resume_handoff_diff: ResumeHandoffDiffReport = Field(default_factory=ResumeHandoffDiffReport)
     run_progress: RunProgressReport = Field(default_factory=RunProgressReport)
     report_integrity: ReportIntegrityReport = Field(default_factory=ReportIntegrityReport)
+    report_integrity_refreshes: list[ReportIntegrityRefreshRecord] = Field(default_factory=list)
+    checkpoint_quality: CheckpointQualityReport = Field(default_factory=CheckpointQualityReport)
+    checkpoint_quality_resumes: CheckpointQualityResumeReport = Field(default_factory=CheckpointQualityResumeReport)
     objective_readiness: ObjectiveReadinessReport = Field(default_factory=ObjectiveReadinessReport)
     objective_readiness_proof_outcomes: list[ObjectiveReadinessProofOutcome] = Field(default_factory=list)
     readiness_completion: ReadinessCompletionReport = Field(default_factory=ReadinessCompletionReport)
@@ -1250,6 +1870,8 @@ class HandoffBundle(BaseModel):
     operator_dispatch_restart_smoke: OperatorDispatchRestartSmokeReport = Field(default_factory=OperatorDispatchRestartSmokeReport)
     ornith_preflight: OrnithLaunchChecklistReport = Field(default_factory=OrnithLaunchChecklistReport)
     ornith_preflight_actions: OrnithPreflightActionLedgerReport = Field(default_factory=OrnithPreflightActionLedgerReport)
+    ornith_preflight_warnings: OrnithPreflightWarningReport = Field(default_factory=OrnithPreflightWarningReport)
+    readiness_proof_history: ReadinessProofHistoryReport = Field(default_factory=ReadinessProofHistoryReport)
     resume_prompt: str = ""
 
 
@@ -1269,6 +1891,10 @@ class ReplayApproval(BaseModel):
     reason: str
     created_at: str
     resolved_at: str | None = None
+    reviewed: bool = False
+    review_count: int = 0
+    latest_reviewed_at: str = ""
+    latest_review_event_id: int = 0
     preview_summary: str = ""
     preview_files: list[str] = Field(default_factory=list)
 
@@ -1283,14 +1909,29 @@ class ReplayBundle(BaseModel):
     original_goal: str
     active_goal: str
     goal_evolution: GoalEvolutionReport = Field(default_factory=GoalEvolutionReport)
+    git_checkpoint: GitCheckpointReport = Field(default_factory=GitCheckpointReport)
     milestone: str
     next_action: str
     context_pressure: str
+    context_snapshot: ContextSnapshot = Field(default_factory=ContextSnapshot)
+    resume_prompt_quality: ResumePromptQualityReport = Field(default_factory=ResumePromptQualityReport)
+    resume_handoff_diff: ResumeHandoffDiffReport = Field(default_factory=ResumeHandoffDiffReport)
+    promotion_audit: PromotionAuditReport = Field(default_factory=PromotionAuditReport)
+    promotion_verification: PromotionVerificationReport = Field(default_factory=PromotionVerificationReport)
+    promotion_repair: PromotionRepairReport = Field(default_factory=PromotionRepairReport)
     handoff: HandoffBundle = Field(default_factory=HandoffBundle)
     event_count: int = 0
     approval_count: int = 0
     source_evidence: SourceEvidencePreviewReport = Field(default_factory=SourceEvidencePreviewReport)
+    readiness_source_ref_preview: ReadinessSourceRefPreviewReport = Field(
+        default_factory=ReadinessSourceRefPreviewReport
+    )
+    desktop_effect_proof: DesktopEffectProofReport = Field(default_factory=DesktopEffectProofReport)
+    desktop_effect_proof_repairs: DesktopEffectProofRepairReport = Field(default_factory=DesktopEffectProofRepairReport)
     action_context: ActionContextPack = Field(default_factory=ActionContextPack)
+    self_scaffold: SelfScaffoldReport = Field(default_factory=SelfScaffoldReport)
+    self_scaffold_reviews: SelfScaffoldReviewReport = Field(default_factory=SelfScaffoldReviewReport)
+    self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport = Field(default_factory=SelfScaffoldRollbackIntentReport)
     events: list[ReplayEvent] = Field(default_factory=list)
     approvals: list[ReplayApproval] = Field(default_factory=list)
     acceptance_evidence: list[AcceptanceCriterionEvidence] = Field(default_factory=list)
@@ -1300,8 +1941,12 @@ class ReplayBundle(BaseModel):
     completion_audit: CompletionAuditReport = Field(default_factory=lambda: CompletionAuditReport(run_id=""))
     policy_simulation: PolicySimulationReport = Field(default_factory=PolicySimulationReport)
     resume_decisions: ResumeDecisionReport = Field(default_factory=ResumeDecisionReport)
+    resume_handoff_diff: ResumeHandoffDiffReport = Field(default_factory=ResumeHandoffDiffReport)
     run_progress: RunProgressReport = Field(default_factory=RunProgressReport)
     report_integrity: ReportIntegrityReport = Field(default_factory=ReportIntegrityReport)
+    report_integrity_refreshes: list[ReportIntegrityRefreshRecord] = Field(default_factory=list)
+    checkpoint_quality: CheckpointQualityReport = Field(default_factory=CheckpointQualityReport)
+    checkpoint_quality_resumes: CheckpointQualityResumeReport = Field(default_factory=CheckpointQualityResumeReport)
     objective_readiness: ObjectiveReadinessReport = Field(default_factory=ObjectiveReadinessReport)
     objective_readiness_proof_outcomes: list[ObjectiveReadinessProofOutcome] = Field(default_factory=list)
     readiness_completion: ReadinessCompletionReport = Field(default_factory=ReadinessCompletionReport)
@@ -1316,6 +1961,8 @@ class ReplayBundle(BaseModel):
     operator_dispatch_restart_smoke: OperatorDispatchRestartSmokeReport = Field(default_factory=OperatorDispatchRestartSmokeReport)
     ornith_preflight: OrnithLaunchChecklistReport = Field(default_factory=OrnithLaunchChecklistReport)
     ornith_preflight_actions: OrnithPreflightActionLedgerReport = Field(default_factory=OrnithPreflightActionLedgerReport)
+    ornith_preflight_warnings: OrnithPreflightWarningReport = Field(default_factory=OrnithPreflightWarningReport)
+    readiness_proof_history: ReadinessProofHistoryReport = Field(default_factory=ReadinessProofHistoryReport)
     task_graph: list[TaskNode] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     model_interactions: list[ModelInteractionRecord] = Field(default_factory=list)
@@ -1335,6 +1982,7 @@ class RunState(BaseModel):
     proposed_goal: str | None = None
     goal_revision_reason: str = ""
     goal_evolution: GoalEvolutionReport = Field(default_factory=GoalEvolutionReport)
+    git_checkpoint: GitCheckpointReport = Field(default_factory=GitCheckpointReport)
     current_plan: list[str] = Field(default_factory=list)
     completed_steps: list[str] = Field(default_factory=list)
     next_step: str = ""
@@ -1350,10 +1998,14 @@ class RunState(BaseModel):
     run_health: RunHealthReport = Field(default_factory=RunHealthReport)
     run_progress: RunProgressReport = Field(default_factory=RunProgressReport)
     report_integrity: ReportIntegrityReport = Field(default_factory=ReportIntegrityReport)
+    report_integrity_refreshes: list[ReportIntegrityRefreshRecord] = Field(default_factory=list)
+    checkpoint_quality: CheckpointQualityReport = Field(default_factory=CheckpointQualityReport)
+    checkpoint_quality_resumes: CheckpointQualityResumeReport = Field(default_factory=CheckpointQualityResumeReport)
     objective_readiness: ObjectiveReadinessReport = Field(default_factory=ObjectiveReadinessReport)
     objective_readiness_proof_outcomes: list[ObjectiveReadinessProofOutcome] = Field(default_factory=list)
     readiness_completion: ReadinessCompletionReport = Field(default_factory=ReadinessCompletionReport)
     readiness_rehearsal: ReadinessRehearsalReport = Field(default_factory=ReadinessRehearsalReport)
+    readiness_proof_history: ReadinessProofHistoryReport = Field(default_factory=ReadinessProofHistoryReport)
     action_readiness: ActionReadinessReport = Field(default_factory=ActionReadinessReport)
     action_readiness_decisions: ActionReadinessDecisionReport = Field(default_factory=ActionReadinessDecisionReport)
     autonomy_decisions: AutonomyDecisionReport = Field(default_factory=AutonomyDecisionReport)
@@ -1368,6 +2020,7 @@ class RunState(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     memory_refs: list[str] = Field(default_factory=list)
     tool_profile: str = "balanced"
+    approval_mode: str = "balanced"
     web_enabled: bool = True
     browser_enabled: bool = True
     desktop_enabled: bool = True
@@ -1379,9 +2032,22 @@ class RunState(BaseModel):
     web_sources: list[WebSource] = Field(default_factory=list)
     desktop_snapshots: list[DesktopSnapshot] = Field(default_factory=list)
     source_evidence: SourceEvidencePreviewReport = Field(default_factory=SourceEvidencePreviewReport)
+    readiness_source_ref_preview: ReadinessSourceRefPreviewReport = Field(
+        default_factory=ReadinessSourceRefPreviewReport
+    )
+    desktop_effect_proof: DesktopEffectProofReport = Field(default_factory=DesktopEffectProofReport)
+    desktop_effect_proof_repairs: DesktopEffectProofRepairReport = Field(default_factory=DesktopEffectProofRepairReport)
     action_context: ActionContextPack = Field(default_factory=ActionContextPack)
+    self_scaffold: SelfScaffoldReport = Field(default_factory=SelfScaffoldReport)
+    self_scaffold_reviews: SelfScaffoldReviewReport = Field(default_factory=SelfScaffoldReviewReport)
+    self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport = Field(default_factory=SelfScaffoldRollbackIntentReport)
     context_budget: ContextBudget = Field(default_factory=ContextBudget)
     context_snapshot: ContextSnapshot = Field(default_factory=ContextSnapshot)
+    resume_prompt_quality: ResumePromptQualityReport = Field(default_factory=ResumePromptQualityReport)
+    resume_handoff_diff: ResumeHandoffDiffReport = Field(default_factory=ResumeHandoffDiffReport)
+    promotion_audit: PromotionAuditReport = Field(default_factory=PromotionAuditReport)
+    promotion_verification: PromotionVerificationReport = Field(default_factory=PromotionVerificationReport)
+    promotion_repair: PromotionRepairReport = Field(default_factory=PromotionRepairReport)
     handoff_summary: HandoffBundle = Field(default_factory=HandoffBundle)
     repo_map: RepoMap = Field(default_factory=RepoMap)
     workspace_isolation: WorkspaceIsolation = Field(default_factory=WorkspaceIsolation)
@@ -1407,6 +2073,7 @@ class CreateRunRequest(BaseModel):
     workspace_path: str | None = None
     acceptance_criteria: list[str] = Field(default_factory=list)
     tool_profile: str = "balanced"
+    approval_mode: str = "balanced"
     web_enabled: bool = True
     browser_enabled: bool = True
     desktop_enabled: bool = True
@@ -1459,6 +2126,25 @@ class ApprovalRecord(BaseModel):
     resolved_at: str | None = None
 
 
+class ApprovalReviewRecord(BaseModel):
+    id: int
+    run_id: str
+    status: Literal["pending", "approved", "rejected"]
+    action_kind: str
+    reason: str
+    created_at: str
+    resolved_at: str | None = None
+    summary: str = ""
+    preview: dict[str, Any] = Field(default_factory=dict)
+    files: list[str] = Field(default_factory=list)
+    payload_keys: list[str] = Field(default_factory=list)
+    high_risk: bool = False
+    reviewed: bool = False
+    review_count: int = 0
+    latest_reviewed_at: str = ""
+    latest_review_event_id: int = 0
+
+
 class OperatorActionQueueItem(BaseModel):
     id: str
     run_id: str
@@ -1474,6 +2160,7 @@ class OperatorActionQueueItem(BaseModel):
     endpoint: str = ""
     method: str = ""
     ui_target: str = ""
+    promotion_gate: bool = False
     details: list[str] = Field(default_factory=list)
 
 
@@ -1484,7 +2171,16 @@ class OperatorActionQueueReport(BaseModel):
     watch_count: int = 0
     approval_count: int = 0
     smoke_count: int = 0
+    readiness_proof_history_count: int = 0
+    readiness_source_ref_count: int = 0
+    desktop_effect_proof_count: int = 0
     preflight_count: int = 0
+    checkpoint_quality_count: int = 0
+    promotion_count: int = 0
+    promotion_approval_count: int = 0
+    self_scaffold_count: int = 0
+    self_scaffold_rollback_count: int = 0
+    goal_confirmation_count: int = 0
     recovery_count: int = 0
     blocker_count: int = 0
     summary: str = ""

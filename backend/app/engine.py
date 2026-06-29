@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -13,8 +13,15 @@ from .action_context import build_action_context_pack
 from .action_normalizer import normalize_model_action
 from .action_readiness import build_action_readiness, rank_acceptance_recommendations
 from .action_readiness_decisions import build_action_readiness_decision_report
+from .artifact_verification import (
+    artifact_creation_action,
+    artifact_verification_command,
+    expected_artifact_exists,
+    expected_artifact_suffix,
+)
 from .acceptance import compact_label_progress, infer_required_labels
 from .autonomy_decisions import build_autonomy_decision_report
+from .checkpoint_quality import build_checkpoint_quality
 from .completion_audit import build_completion_audit
 from .config import AppConfig
 from .context_compiler import ContextCompiler
@@ -25,6 +32,7 @@ from .goal_evolution import (
     record_goal_unchanged,
     resolve_goal_proposal,
 )
+from .goal_classification import is_harness_improvement_goal
 from .memory import MemoryContext, ObsidianMemory
 from .model_eval import run_ornith_fixture_eval
 from .model_client import ModelError, OpenAICompatibleModel
@@ -49,8 +57,10 @@ from .recovery_decisions import build_recovery_decision_report
 from .replay import build_replay_bundle
 from .report_integrity import build_report_integrity
 from .resume_decisions import build_resume_decision_report
+from .resume_quality import build_resume_prompt_quality
 from .run_health import build_run_health
 from .run_progress import build_run_progress
+from .self_scaffold import build_self_scaffold_report, build_self_scaffold_review_report, build_self_scaffold_rollback_intent_report
 from .source_evidence import build_source_evidence_preview
 from .verification_outcomes import build_verification_outcome_report
 from .schemas import (
@@ -73,6 +83,8 @@ from .schemas import (
     OperatorDispatchRestartSmokeLedgerReport,
     OperatorDispatchRestartSmokeReport,
     OperatorActionQueueReport,
+    PatchApplication,
+    PatchProposal,
     ObjectiveReadinessProof,
     ObjectiveReadinessProofOutcome,
     ReadinessRehearsalLedgerEntry,
@@ -90,22 +102,30 @@ from .schemas import (
     ToolCallRecord,
     WorkspaceIsolation,
 )
-from .tools import TOOL_NAMES, ToolRegistry, ToolResult, ToolRunner
+from .tools import TOOL_NAMES, ToolRegistry, ToolResult, ToolRunner, redact_secrets
 from .workspace import WorkspaceManager, build_workspace_diff
 
 
 MILESTONES = ("orient", "plan", "act", "verify", "checkpoint", "decide")
+STARTUP_RESUME_BLOCKER_PREFIX = "Supervisor recovered stale "
+STARTUP_RESUME_BLOCKER_ACTION = "resume explicitly from handoff"
+STARTUP_ORPHAN_APPROVAL_BLOCKER = "Supervisor found waiting_approval status without a pending approval after startup."
+LOOP_STEP_LIMIT_BLOCKER = "Reached MAX_LOOP_STEPS."
 READINESS_REHEARSAL_OBJECTIVE_ITEMS = (
     "isolated_workspaces",
     "patch_first_editing",
     "durable_task_graph",
     "compact_context",
+    "resume_prompt_quality",
     "repo_map",
     "verification_critic_loop",
     "failure_recovery",
     "replay_audit_trails",
     "obsidian_handoffs",
     "goal_evolution",
+    "git_checkpoint_cadence",
+    "source_promotion_audit",
+    "resume_handoff_diff",
 )
 
 
@@ -155,6 +175,8 @@ class AgentLoopEngine:
             "operator_dispatch_restart_smoke_attention_count": 0,
             "ornith_preflight_attention_count": 0,
             "source_evidence_attention_count": 0,
+            "self_scaffold_attention_count": 0,
+            "self_scaffold_rollback_attention_count": 0,
             "pending_approval_count": 0,
             "operator_recovery_count": 0,
             "operator_blocker_count": 0,
@@ -173,6 +195,7 @@ class AgentLoopEngine:
         workspace_path: str | None = None,
         acceptance_criteria: list[str] | None = None,
         tool_profile: str = "balanced",
+        approval_mode: str | None = None,
         web_enabled: bool = True,
         browser_enabled: bool = True,
         desktop_enabled: bool = True,
@@ -189,6 +212,7 @@ class AgentLoopEngine:
             workspace_path=workspace,
             acceptance_criteria=acceptance_criteria or [],
             tool_profile=tool_profile,
+            approval_mode=approval_mode or self.config.approval_mode,
             web_enabled=web_enabled and self.config.enable_web_tools,
             browser_enabled=browser_enabled and self.config.enable_browser_tools,
             desktop_enabled=desktop_enabled and self.config.enable_desktop_control,
@@ -230,7 +254,38 @@ class AgentLoopEngine:
         if run.status not in {"completed", "canceled"}:
             state = run.state
             self._reload_anchor_context(run, state)
-            run = self.store.update_run(run_id, state=state)
+            cleared_approval_wait = False
+            cleared_blocked_state = False
+            if source == "manual" and self._clear_startup_resume_blocker(state):
+                self._append_unique(
+                    state.facts_learned,
+                    "Manual resume accepted the recovered startup handoff blocker.",
+                )
+            if source == "manual" and self._clear_orphan_startup_approval_blocker(run_id, state):
+                cleared_approval_wait = True
+                self._append_unique(
+                    state.facts_learned,
+                    "Manual resume cleared recovered waiting_approval state after confirming no pending approvals.",
+                )
+            if source == "manual" and self._clear_resolved_approval_wait_state(run_id, state):
+                cleared_approval_wait = True
+                self._append_unique(
+                    state.facts_learned,
+                    "Manual resume cleared resolved approval wait state after confirming no pending approvals.",
+                )
+            if source in {"manual", "recovery"} and self._clear_loop_step_limit_blocker(state):
+                cleared_blocked_state = True
+                self._append_unique(
+                    state.facts_learned,
+                    "Resume cleared stale MAX_LOOP_STEPS blocker after the configured loop cap increased.",
+                )
+            self._reconcile_approved_objective_readiness_approvals(run_id, state)
+            status_update = run.status
+            if cleared_approval_wait and run.status == "waiting_approval":
+                status_update = "paused"
+            if cleared_blocked_state and run.status == "blocked" and not state.blockers:
+                status_update = "paused"
+            run = self.store.update_run(run_id, status=status_update, state=state)
         integrity = self._build_report_integrity(run, run.state)
         if integrity.status != "ok":
             state = run.state
@@ -306,7 +361,54 @@ class AgentLoopEngine:
             return True, "Explicit recovery resume accepted the active recovery simulation."
         if allow_user_attention and simulation.policy_action in {"ask_user", "pause"}:
             return True, f"User steering accepted policy action {simulation.policy_action}."
+        if source == "manual" and simulation.policy_action == "recover" and state.recovery_plan.status != "active":
+            return True, "Manual resume accepted recover policy because no active recovery plan exists."
         return False, f"Resume preflight blocked by policy simulation: {simulation.summary} {simulation.reason}".strip()
+
+    def _clear_startup_resume_blocker(self, state: RunState) -> bool:
+        original_count = len(state.blockers)
+        state.blockers = [
+            blocker
+            for blocker in state.blockers
+            if not (
+                blocker.startswith(STARTUP_RESUME_BLOCKER_PREFIX)
+                and STARTUP_RESUME_BLOCKER_ACTION in blocker
+            )
+        ]
+        return len(state.blockers) != original_count
+
+    def _clear_orphan_startup_approval_blocker(self, run_id: str, state: RunState) -> bool:
+        if self.store.list_approvals(run_id, status="pending"):
+            return False
+        original_count = len(state.blockers)
+        state.blockers = [
+            blocker
+            for blocker in state.blockers
+            if blocker != STARTUP_ORPHAN_APPROVAL_BLOCKER
+        ]
+        return len(state.blockers) != original_count
+
+    def _clear_loop_step_limit_blocker(self, state: RunState) -> bool:
+        if state.step_count >= self.config.max_loop_steps:
+            return False
+        original_count = len(state.blockers)
+        state.blockers = [blocker for blocker in state.blockers if blocker != LOOP_STEP_LIMIT_BLOCKER]
+        changed = len(state.blockers) != original_count
+        if changed and state.next_step == "Ask user whether to continue.":
+            state.next_step = "Resume from compact handoff under the updated loop step budget."
+        return changed
+
+    def _clear_resolved_approval_wait_state(self, run_id: str, state: RunState) -> bool:
+        if self.store.list_approvals(run_id, status="pending"):
+            return False
+        changed = False
+        if state.active_tool == "ask_user":
+            state.active_tool = ""
+            changed = True
+        if "approval" in state.next_step.lower() or "active tool" in state.next_step.lower():
+            state.next_step = "Resume from the compact handoff after resolved approval state."
+            changed = True
+        return changed
 
     async def _record_resume_preflight(
         self,
@@ -504,6 +606,176 @@ class AgentLoopEngine:
         await self._event(run_id, "approval_required", "Workspace promotion requires approval.", approval)
         return run
 
+    def get_approval_reviews(self, run_id: str, status: str | None = None) -> list[dict[str, Any]]:
+        self.store.get_run(run_id)
+        if status is not None and status not in {"pending", "approved", "rejected"}:
+            raise ValueError("Approval status must be pending, approved, or rejected.")
+        approvals = self.store.list_approvals(run_id, status=status)
+        reviews: list[dict[str, Any]] = []
+        for approval in approvals:
+            payload = approval.get("payload") if isinstance(approval.get("payload"), dict) else {}
+            preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else {}
+            reviews.append(
+                {
+                    "id": int(approval.get("id") or 0),
+                    "run_id": str(approval.get("run_id") or run_id),
+                    "action_kind": str(approval.get("action_kind") or "steer"),
+                    "status": str(approval.get("status") or "pending"),
+                    "reason": redact_secrets(str(approval.get("reason") or "")),
+                    "created_at": str(approval.get("created_at") or ""),
+                    "resolved_at": str(approval.get("resolved_at") or ""),
+                    "preview": preview,
+                    "files": [str(item) for item in payload.get("files", [])] if isinstance(payload.get("files"), list) else [],
+                    "payload_keys": sorted(str(key) for key in payload.keys() if str(key) != "high_risk"),
+                    "high_risk": bool(payload.get("high_risk")) or self._approval_is_high_risk(str(approval.get("action_kind") or "")),
+                    "reviewed": bool(approval.get("status") in {"approved", "rejected"}),
+                    "review_count": 1 if approval.get("status") in {"approved", "rejected"} else 0,
+                    "latest_reviewed_at": str(approval.get("resolved_at") or ""),
+                    "latest_review_event_id": 0,
+                }
+            )
+        return reviews
+
+    async def request_patch_apply_approval(self, run_id: str, patch_id: str) -> RunRecord:
+        run = self.store.get_run(run_id)
+        state = run.state
+        proposal = next((item for item in reversed(state.patch_proposals) if item.id == patch_id), None)
+        if proposal is None:
+            raise ValueError(f"Patch proposal {patch_id} was not found.")
+        if proposal.status not in {"pending", "approved"}:
+            raise ValueError(f"Patch proposal {patch_id} is not pending review.")
+        pending = [
+            approval
+            for approval in self.store.list_approvals(run_id, status="pending")
+            if approval.get("action_kind") == "patch_apply"
+            and isinstance(approval.get("payload"), dict)
+            and isinstance(approval["payload"].get("args"), dict)
+            and str(approval["payload"]["args"].get("patch_id") or "") == proposal.id
+        ]
+        if pending:
+            state.active_tool = "patch_apply"
+            state.next_step = f"Wait for existing patch apply approval for `{proposal.id}`."
+            self._append_unique(state.facts_learned, f"Reused existing pending patch apply approval for {proposal.id}.")
+            state.handoff_summary = self._make_handoff(run, state)
+            run = self.store.update_run(run_id, status="waiting_approval", state=state)
+            await self._event(run_id, "approval_required", f"Existing pending patch apply approval for {proposal.id} is still waiting.", pending[0])
+            return run
+        approval = self.store.create_approval(
+            run_id,
+            "patch_apply",
+            {
+                "tool_name": "patch_apply",
+                "args": {"patch_id": proposal.id, "diff": proposal.diff},
+                "preview": self._patch_apply_approval_preview(proposal),
+                "files": proposal.files,
+                "summary": proposal.summary,
+                "high_risk": True,
+            },
+            f"Apply patch proposal {proposal.id}: {proposal.title}",
+        )
+        state.active_tool = "patch_apply"
+        state.next_step = f"Wait for approval to apply patch proposal `{proposal.id}`."
+        self._append_unique(state.facts_learned, f"Requested approval to apply patch proposal {proposal.id}.")
+        state.handoff_summary = self._make_handoff(run, state)
+        run = self.store.update_run(run_id, status="waiting_approval", state=state)
+        await self._event(run_id, "approval_required", f"Patch apply approval required for {proposal.id}.", approval)
+        return run
+
+    async def request_patch_rollback_approval(self, run_id: str, patch_id: str) -> RunRecord:
+        run = self.store.get_run(run_id)
+        state = run.state
+        application = next(
+            (
+                item
+                for item in reversed(state.patch_applications)
+                if item.patch_id == patch_id and item.status == "applied" and item.backup_id and item.manifest_path
+            ),
+            None,
+        )
+        if application is None:
+            raise ValueError(f"Applied patch {patch_id} with rollback manifest was not found.")
+        if any(item.status == "rolled_back" and item.patch_id == patch_id for item in state.patch_applications):
+            raise ValueError(f"Patch {patch_id} has already been rolled back.")
+        pending = [
+            approval
+            for approval in self.store.list_approvals(run_id, status="pending")
+            if approval.get("action_kind") == "patch_rollback"
+            and isinstance(approval.get("payload"), dict)
+            and isinstance(approval["payload"].get("args"), dict)
+            and (
+                str(approval["payload"]["args"].get("patch_id") or "") == application.patch_id
+                or str(approval["payload"]["args"].get("backup_id") or "") == application.backup_id
+            )
+        ]
+        if pending:
+            state.active_tool = "patch_rollback"
+            state.next_step = f"Wait for existing patch rollback approval for `{application.patch_id}`."
+            self._append_unique(state.facts_learned, f"Reused existing pending patch rollback approval for {application.patch_id}.")
+            state.handoff_summary = self._make_handoff(run, state)
+            run = self.store.update_run(run_id, status="waiting_approval", state=state)
+            await self._event(run_id, "approval_required", f"Existing pending patch rollback approval for {application.patch_id} is still waiting.", pending[0])
+            return run
+        approval = self.store.create_approval(
+            run_id,
+            "patch_rollback",
+            {
+                "tool_name": "patch_rollback",
+                "args": {
+                    "patch_id": application.patch_id,
+                    "backup_id": application.backup_id,
+                    "manifest_path": application.manifest_path,
+                },
+                "preview": self._patch_rollback_approval_preview(application),
+                "files": application.files,
+                "summary": application.summary,
+                "high_risk": True,
+            },
+            f"Rollback patch {application.patch_id} from backup {application.backup_id}.",
+        )
+        state.active_tool = "patch_rollback"
+        state.next_step = f"Wait for approval to rollback patch `{application.patch_id}`."
+        self._append_unique(state.facts_learned, f"Requested approval to rollback patch {application.patch_id}.")
+        state.handoff_summary = self._make_handoff(run, state)
+        run = self.store.update_run(run_id, status="waiting_approval", state=state)
+        await self._event(run_id, "approval_required", f"Patch rollback approval required for {application.patch_id}.", approval)
+        return run
+
+    def _approval_is_high_risk(self, action_kind: str) -> bool:
+        return action_kind in {"patch_apply", "patch_rollback", "workspace_promote", "shell", "desktop_click", "desktop_type"}
+
+    def _patch_apply_approval_preview(self, proposal: PatchProposal) -> dict[str, Any]:
+        redacted_diff = redact_secrets(proposal.diff)
+        return {
+            "summary": redact_secrets(proposal.summary or f"Patch proposal {proposal.id}: {proposal.title}"),
+            "patch_id": proposal.id,
+            "title": redact_secrets(proposal.title),
+            "files": self._patch_diff_preview_files(redacted_diff, proposal.files),
+            "diff_excerpt": redacted_diff[:4000],
+            "truncated": len(redacted_diff) > 4000,
+        }
+
+    def _patch_rollback_approval_preview(self, application: PatchApplication) -> dict[str, Any]:
+        return {
+            "summary": redact_secrets(application.summary or f"Rollback patch {application.patch_id}"),
+            "patch_id": application.patch_id,
+            "backup_id": application.backup_id,
+            "manifest_path": redact_secrets(application.manifest_path),
+            "files": [{"path": redact_secrets(path), "status": "restore"} for path in application.files[:12]],
+            "high_risk": True,
+            "requires_approval": True,
+            "mutation_automatic": False,
+        }
+
+    def _patch_diff_preview_files(self, diff: str, proposal_files: list[str]) -> list[dict[str, Any]]:
+        paths = proposal_files or []
+        return [
+            {
+                "path": redact_secrets(path),
+                "diff_excerpt": diff[:1200],
+                "truncated": len(diff) > 1200,
+            }
+            for path in paths[:12]
+        ]
     async def resume_recovery(self, run_id: str) -> RunRecord:
         run = self.store.get_run(run_id)
         state = run.state
@@ -569,8 +841,12 @@ class AgentLoopEngine:
     def get_supervisor_report(self) -> dict[str, Any]:
         return self.supervisor_report
 
-    def get_operator_action_queue(self, limit: int = 12) -> dict[str, Any]:
-        return self._build_operator_action_queue(self.supervisor_report, limit=max(1, min(50, limit))).model_dump()
+    def get_operator_action_queue(self, limit: int = 12, queue_filter: str = "all") -> dict[str, Any]:
+        return self._build_operator_action_queue(
+            self.supervisor_report,
+            limit=max(1, min(50, limit)),
+            queue_filter=queue_filter,
+        ).model_dump()
 
     def get_operator_dispatches(self, run_id: str | None = None, limit: int = 20) -> dict[str, Any]:
         bounded_limit = max(1, min(100, limit))
@@ -722,6 +998,89 @@ class AgentLoopEngine:
                 refresh=True,
             )
 
+        if item.ui_target == "self_scaffold":
+            event_kind = "operator_action_reviewed"
+            run = self.store.get_run(item.run_id)
+            scaffold_events = self.store.list_events(item.run_id, limit=300)
+            review_report = build_self_scaffold_report(run, scaffold_events, limit=12)
+            reviewable_changes = [change for change in review_report.changes if change.status == "needs_review"]
+            if not reviewable_changes:
+                reviewable_changes = [change for change in run.state.self_scaffold.changes if change.status == "needs_review"]
+            data = {
+                "operator_action": item.model_dump(),
+                "self_scaffold_review": {
+                    "status": review_report.status,
+                    "change_count": review_report.change_count,
+                    "guard_count": review_report.guard_count,
+                    "reviewed_change_count": len(reviewable_changes),
+                    "reviewed_change_ids": [change.id for change in reviewable_changes],
+                    "remaining_goal_review": any(
+                        change.status == "needs_review" and change.kind == "goal_evolution"
+                        for change in review_report.changes
+                    ),
+                },
+            }
+            await self._event(item.run_id, event_kind, "Operator accepted self-scaffold change intent for current guard/reorient changes.", data)
+            run = self.store.get_run(item.run_id)
+            state = run.state
+            review_events = self.store.list_events(item.run_id, limit=300)
+            state.self_scaffold = build_self_scaffold_report(run, review_events, limit=12)
+            state.self_scaffold_reviews = build_self_scaffold_review_report(run, review_events, limit=8)
+            state.self_scaffold_rollback_intents = build_self_scaffold_rollback_intent_report(
+                run,
+                review_events,
+                self_scaffold=state.self_scaffold,
+                reviews=state.self_scaffold_reviews,
+                limit=8,
+            )
+            state.latest_summary = state.self_scaffold.summary
+            state.next_step = "Self-scaffold review accepted; resume from the compact handoff when ready."
+            state.handoff_summary = self._make_handoff(run, state)
+            updated = self.store.update_run(item.run_id, status=run.status, state=state)
+            self.memory.append_checkpoint(updated, state, "self_scaffold_review")
+            return await finish(
+                "reviewed",
+                "Self-scaffold review accepted and the operator queue was refreshed.",
+                action_taken="self_scaffold_review",
+                event_kind=event_kind,
+                refresh=True,
+            )
+
+        if item.ui_target == "patch_apply_approval":
+            patch_id = self._patch_id_from_apply_endpoint(item.endpoint)
+            if not patch_id:
+                event_kind = "operator_action_blocked"
+                await self._event(item.run_id, event_kind, "Queued patch apply action had no patch id.", event_data())
+                return await finish("blocked", "Patch apply action is missing a patch id; refresh the queue.", action_taken="none", event_kind=event_kind, refresh=True)
+            event_kind = "operator_action_dispatched"
+            await self._event(item.run_id, event_kind, f"Operator requested patch apply approval {patch_id}.", event_data())
+            updated = await self.request_patch_apply_approval(item.run_id, patch_id)
+            return await finish(
+                "dispatched",
+                "Patch apply approval was requested for the promotion repair patch.",
+                action_taken="patch_apply_approval",
+                event_kind=event_kind,
+                result_run_id=updated.id,
+                refresh=True,
+            )
+
+        if item.ui_target == "patch_rollback_approval":
+            patch_id = self._patch_id_from_rollback_endpoint(item.endpoint)
+            if not patch_id:
+                event_kind = "operator_action_blocked"
+                await self._event(item.run_id, event_kind, "Queued patch rollback action had no patch id.", event_data())
+                return await finish("blocked", "Patch rollback action is missing a patch id; refresh the queue.", action_taken="none", event_kind=event_kind, refresh=True)
+            event_kind = "operator_action_dispatched"
+            await self._event(item.run_id, event_kind, f"Operator requested patch rollback approval {patch_id}.", event_data())
+            updated = await self.request_patch_rollback_approval(item.run_id, patch_id)
+            return await finish(
+                "dispatched",
+                "Patch rollback approval was requested; no rollback was executed.",
+                action_taken="patch_rollback_approval",
+                event_kind=event_kind,
+                result_run_id=updated.id,
+                refresh=True,
+            )
         if item.ui_target == "readiness_rehearsal":
             event_kind = "operator_action_dispatched"
             await self._event(item.run_id, event_kind, "Operator dispatched readiness-smoke rehearsal.", event_data())
@@ -852,6 +1211,8 @@ class AgentLoopEngine:
             "operator_dispatch_restart_smoke_attention_count": 0,
             "ornith_preflight_attention_count": 0,
             "source_evidence_attention_count": 0,
+            "self_scaffold_attention_count": 0,
+            "self_scaffold_rollback_attention_count": 0,
             "pending_approval_count": 0,
             "operator_recovery_count": 0,
             "operator_blocker_count": 0,
@@ -866,6 +1227,7 @@ class AgentLoopEngine:
             report["operator_dispatch_restart_smoke_ledger"]
         )
         for run in self.store.list_runs():
+            await asyncio.sleep(0)
             report["checked"] += 1
             state = run.state
             pending_approvals = self.store.list_approvals(run.id, status="pending")
@@ -880,6 +1242,29 @@ class AgentLoopEngine:
             )
             state.source_evidence = source_evidence
             source_evidence_requires_attention = bool(source_evidence.missing_labels) and run.status not in {"completed", "canceled"}
+            scaffold_events = self.store.list_events(run.id, limit=300)
+            self_scaffold = build_self_scaffold_report(run.model_copy(update={"state": state}), scaffold_events, limit=12)
+            state.self_scaffold = self_scaffold
+            self_scaffold_reviews = build_self_scaffold_review_report(run.model_copy(update={"state": state}), scaffold_events, limit=8)
+            state.self_scaffold_reviews = self_scaffold_reviews
+            self_scaffold_rollback_intents = build_self_scaffold_rollback_intent_report(
+                run.model_copy(update={"state": state}),
+                scaffold_events,
+                self_scaffold=self_scaffold,
+                reviews=self_scaffold_reviews,
+                limit=8,
+            )
+            state.self_scaffold_rollback_intents = self_scaffold_rollback_intents
+            self_scaffold_requires_attention = self_scaffold.status == "needs_review"
+            self_scaffold_action = self_scaffold.recommended_action or "Review self-scaffold change intent before broad autonomy."
+            self_scaffold_rollback_requires_attention = (
+                self_scaffold_rollback_intents.status == "needs_approval"
+                and self_scaffold_rollback_intents.patch_rollback_count > 0
+            )
+            self_scaffold_rollback_action = (
+                self_scaffold_rollback_intents.recommended_action
+                or "Review self-scaffold rollback intent before broad autonomy."
+            )
             objective_readiness_action = self._objective_readiness_supervisor_action(run, state, objective_readiness)
             readiness_smoke = self._readiness_smoke_supervisor_signal(run, state, rehearsal_ledger)
             dispatch_restart_smoke = self._operator_dispatch_restart_smoke_supervisor_signal(
@@ -912,12 +1297,22 @@ class AgentLoopEngine:
                 report["ornith_preflight_attention_count"] += 1
             if source_evidence_requires_attention:
                 report["source_evidence_attention_count"] += 1
+            if self_scaffold_requires_attention:
+                report["self_scaffold_attention_count"] += 1
+            if self_scaffold_rollback_requires_attention:
+                report["self_scaffold_rollback_attention_count"] += 1
             auto_resume_eligible, auto_resume_reason = self._auto_resume_decision(
                 run,
                 pending_approvals,
                 policy_simulation,
                 run_progress,
             )
+            if self_scaffold_rollback_requires_attention:
+                auto_resume_eligible = False
+                auto_resume_reason = self_scaffold_rollback_action
+            elif self_scaffold_requires_attention:
+                auto_resume_eligible = False
+                auto_resume_reason = self_scaffold_action
             run_entry = {
                 "run_id": run.id,
                 "title": run.title,
@@ -940,6 +1335,17 @@ class AgentLoopEngine:
                 "source_evidence": source_evidence.model_dump(),
                 "source_evidence_requires_attention": source_evidence_requires_attention,
                 "source_evidence_action": source_evidence.recommended_action,
+                "self_scaffold": self_scaffold.model_dump(),
+                "self_scaffold_reviews": self_scaffold_reviews.model_dump(),
+                "self_scaffold_rollback_intents": self_scaffold_rollback_intents.model_dump(),
+                "self_scaffold_status": self_scaffold.status,
+                "self_scaffold_requires_attention": self_scaffold_requires_attention,
+                "self_scaffold_action": self_scaffold_action,
+                "self_scaffold_latest_change": self_scaffold.latest_change,
+                "self_scaffold_rollback_requires_attention": self_scaffold_rollback_requires_attention,
+                "self_scaffold_rollback_action": self_scaffold_rollback_action,
+                "self_scaffold_rollback_patch_count": self_scaffold_rollback_intents.patch_rollback_count,
+                "self_scaffold_rollback_latest_review_event_id": self_scaffold_rollback_intents.latest_review_event_id,
                 "readiness_smoke_required": readiness_smoke["required"],
                 "readiness_smoke_status": readiness_smoke["status"],
                 "readiness_smoke_action": readiness_smoke["action"],
@@ -1089,9 +1495,53 @@ class AgentLoopEngine:
         run = self.store.get_run(run_id)
         state = run.state
         state.blockers = [item for item in state.blockers if item != approval["reason"]]
+        self._resolve_objective_readiness_approval(run, state, approval)
+        state.objective_readiness = self._build_objective_readiness(run, state)
         state.handoff_summary = self._make_handoff(run, state)
         self.store.update_run(run_id, state=state)
         return await self._resume_run_with_preflight(run_id, source="approval")
+
+    def _resolve_objective_readiness_approval(self, run: RunRecord, state: RunState, approval: dict[str, Any]) -> None:
+        if approval.get("action_kind") != "ask_user":
+            return
+        text = f"{approval.get('reason') or ''} {approval.get('payload') or ''}"
+        marker = "Objective readiness proof for "
+        if marker not in text:
+            return
+        item_id = text.split(marker, 1)[1].split(" ", 1)[0].strip(" :`.,")
+        if not item_id:
+            return
+        if any(
+            outcome.item_id == item_id
+            and outcome.outcome == "verified"
+            and outcome.strategy == "approval_resolution"
+            for outcome in state.objective_readiness_proof_outcomes
+        ):
+            return
+        state.objective_readiness_proof_outcomes.append(
+            ObjectiveReadinessProofOutcome(
+                id=f"obj-proof-{uuid4().hex[:8]}",
+                item_id=item_id,
+                tool="ask_user",
+                evidence_label="approval",
+                strategy="approval_resolution",
+                outcome="verified",
+                ok=True,
+                summary=f"Operator approved supervised objective-readiness proof path for {item_id}.",
+                proof_action=str(approval.get("reason") or "")[:500],
+                created_at=utc_now(),
+            )
+        )
+        state.objective_readiness_proof_outcomes = state.objective_readiness_proof_outcomes[-40:]
+        self._append_unique(
+            state.facts_learned,
+            f"Objective readiness approval resolved for {item_id}.",
+        )
+
+    def _reconcile_approved_objective_readiness_approvals(self, run_id: str, state: RunState) -> None:
+        run = self.store.get_run(run_id)
+        for approval in self.store.list_approvals(run_id, status="approved"):
+            self._resolve_objective_readiness_approval(run, state, approval)
 
     async def reject_action(self, run_id: str, approval_id: int) -> RunRecord:
         approval = self.store.resolve_approval(approval_id, "rejected")
@@ -1665,6 +2115,87 @@ class AgentLoopEngine:
                 ),
             )
 
+            scaffold_events = self.store.list_events(run.id, limit=300)
+            checkpointed.state.self_scaffold = build_self_scaffold_report(checkpointed, scaffold_events, limit=12)
+            reviewed_change_ids = [change.id for change in checkpointed.state.self_scaffold.changes[:3]]
+            self._append_rehearsal_step(
+                steps,
+                self._rehearsal_step(
+                    checkpointed,
+                    "self_scaffold_guard_seeded",
+                    bool(reviewed_change_ids),
+                    "Self-scaffold review has concrete compact change rows to accept before restart.",
+                    [
+                        f"changes={checkpointed.state.self_scaffold.change_count}",
+                        f"review_ids={','.join(reviewed_change_ids[:3])}",
+                    ],
+                ),
+            )
+            await self._event(
+                run.id,
+                "operator_action_reviewed",
+                "Operator accepted self-scaffold change intent for readiness rehearsal.",
+                {
+                    "operator_action": {
+                        "reason": "self_scaffold",
+                        "action": "Accept readiness rehearsal self-scaffold guard posture.",
+                        "ui_target": "self_scaffold",
+                    },
+                    "self_scaffold_review": {
+                        "status": "needs_review" if reviewed_change_ids else "none",
+                        "change_count": checkpointed.state.self_scaffold.change_count,
+                        "guard_count": checkpointed.state.self_scaffold.guard_count,
+                        "reviewed_change_count": len(reviewed_change_ids),
+                        "reviewed_change_ids": reviewed_change_ids,
+                        "remaining_goal_review": False,
+                    },
+                },
+            )
+            review_event = self._latest_event(run.id, "operator_action_reviewed")
+            review_events = self.store.list_events(run.id, limit=300)
+            checkpointed.state.self_scaffold = build_self_scaffold_report(checkpointed, review_events, limit=12)
+            checkpointed.state.self_scaffold_reviews = build_self_scaffold_review_report(checkpointed, review_events, limit=8)
+            checkpointed.state.self_scaffold_rollback_intents = build_self_scaffold_rollback_intent_report(
+                checkpointed,
+                review_events,
+                self_scaffold=checkpointed.state.self_scaffold,
+                reviews=checkpointed.state.self_scaffold_reviews,
+                limit=8,
+            )
+            checkpointed.state.handoff_summary = self._make_handoff(checkpointed, checkpointed.state)
+            checkpointed = self.store.update_run(run.id, status=checkpointed.status, state=checkpointed.state)
+            self._append_rehearsal_step(
+                steps,
+                self._rehearsal_step(
+                    checkpointed,
+                    "self_scaffold_review",
+                    checkpointed.state.self_scaffold_reviews.reviewed_change_count >= 1
+                    and int(review_event.get("id") or 0) > 0,
+                    "Self-scaffold review outcome is recorded before restart.",
+                    [
+                        f"event={review_event.get('id') or 0}",
+                        f"reviewed={checkpointed.state.self_scaffold_reviews.reviewed_change_count}",
+                    ],
+                    event=review_event,
+                ),
+            )
+            self._append_rehearsal_step(
+                steps,
+                self._rehearsal_step(
+                    checkpointed,
+                    "post_review_handoff_alignment",
+                    checkpointed.state.handoff_summary.current_objective == checkpointed.state.goal
+                    and checkpointed.state.handoff_summary.next_action == checkpointed.state.next_step
+                    and checkpointed.goal in checkpointed.state.handoff_summary.resume_prompt
+                    and checkpointed.state.next_step in checkpointed.state.handoff_summary.resume_prompt,
+                    "Post-review handoff preserves goal and next action before restart.",
+                    [
+                        f"goal_preserved={checkpointed.state.handoff_summary.current_objective == checkpointed.state.goal}",
+                        f"next_preserved={checkpointed.state.handoff_summary.next_action == checkpointed.state.next_step}",
+                    ],
+                ),
+            )
+
             self.store.update_run(run.id, status="paused", state=checkpointed.state)
             await self._event(run.id, "readiness_rehearsal_restart", "Simulated backend restart by recreating the engine over SQLite and Obsidian state.")
             restart_engine = AgentLoopEngine(
@@ -1758,6 +2289,13 @@ class AgentLoopEngine:
                 compact_context_sections=snapshot.sections,
                 replay_attached=True,
                 handoff_attached=True,
+                self_scaffold_reviewed=checkpointed.state.self_scaffold_reviews.reviewed_change_count >= 1,
+                self_scaffold_review_event_id=checkpointed.state.self_scaffold_reviews.latest_event_id,
+                self_scaffold_reviewed_change_count=checkpointed.state.self_scaffold_reviews.reviewed_change_count,
+                post_review_handoff_goal_preserved=checkpointed.state.handoff_summary.current_objective == checkpointed.state.goal,
+                post_review_handoff_next_action_preserved=checkpointed.state.handoff_summary.next_action == checkpointed.state.next_step,
+                post_review_resume_prompt_goal_preserved=checkpointed.goal in checkpointed.state.handoff_summary.resume_prompt,
+                post_review_resume_prompt_next_action_preserved=checkpointed.state.next_step in checkpointed.state.handoff_summary.resume_prompt,
                 next_action="Review replay or handoff for the rehearsal run.",
                 steps=steps,
             )
@@ -1845,6 +2383,51 @@ class AgentLoopEngine:
     def get_verification_outcomes(self, run_id: str) -> dict[str, Any]:
         run = self.store.get_run(run_id)
         return self._build_verification_outcome_report(run, run.state).model_dump()
+
+    def get_resume_prompt_quality(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_run(run_id)
+        report = build_resume_prompt_quality(run, handoff=run.state.handoff_summary)
+        run.state.resume_prompt_quality = report
+        run.state.handoff_summary.resume_prompt_quality = report
+        self.store.update_run(run.id, state=run.state)
+        return report.model_dump()
+
+    def get_resume_handoff_diff(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.resume_handoff_diff.model_dump()
+
+    def get_promotion_audit(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.promotion_audit.model_dump()
+
+    def get_promotion_verification(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.promotion_verification.model_dump()
+
+    def get_promotion_repair(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.promotion_repair.model_dump()
+
+    def get_checkpoint_quality(self, run_id: str) -> dict[str, Any]:
+        run = self.store.get_run(run_id)
+        note_text = self.memory.read_run_note(run.id)
+        note_path = self.memory.vault_path / "Agent Runs" / f"{run.id}.md"
+        report = build_checkpoint_quality(
+            run,
+            run.state,
+            note_text=note_text,
+            run_note_path=str(note_path),
+            handoff=run.state.handoff_summary,
+        )
+        run.state.checkpoint_quality = report
+        run.state.handoff_summary.checkpoint_quality = report
+        self.store.update_run(run.id, state=run.state)
+        return report.model_dump()
+
+    def get_git_checkpoint(self, run_id: str) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.git_checkpoint.model_dump()
+
+    def get_desktop_effect_proof_preview(self, run_id: str, limit: int = 8) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.desktop_effect_proof.model_dump()
+
+    def get_readiness_source_ref_preview(self, run_id: str, limit: int = 20) -> dict[str, Any]:
+        return self.store.get_run(run_id).state.readiness_source_ref_preview.model_dump()
 
     def _runs_with_quality_inputs(self) -> list[RunRecord]:
         runs: list[RunRecord] = []
@@ -2531,13 +3114,14 @@ class AgentLoopEngine:
         _prompt, snapshot = self.context_compiler.compile(run, state, memory_context, latest_events)
         state.context_snapshot = snapshot
         estimated_tokens = snapshot.estimated_tokens
+        target_tokens = self.context_compiler.target_tokens
         pressure = "low"
-        if estimated_tokens > state.context_budget.target_tokens:
+        if estimated_tokens > target_tokens:
             pressure = "high"
-        elif estimated_tokens > int(state.context_budget.target_tokens * 0.75):
+        elif estimated_tokens > int(target_tokens * 0.75):
             pressure = "medium"
         state.context_budget = ContextBudget(
-            target_tokens=state.context_budget.target_tokens,
+            target_tokens=target_tokens,
             estimated_tokens=estimated_tokens,
             last_compaction=utc_now() if pressure == "high" else state.context_budget.last_compaction,
             pressure=pressure,
@@ -2633,23 +3217,7 @@ class AgentLoopEngine:
         return merged[: max(1, self.model_profile.plan_max_steps)]
 
     def _is_harness_improvement_goal(self, run: RunRecord, state: RunState) -> bool:
-        text = f"{run.goal} {state.goal}".lower()
-        markers = (
-            "agentorinth",
-            "agent orinth",
-            "ornith",
-            "orinth",
-            "orint",
-            "coding harness",
-            "agent harness",
-            "agentic harness",
-            "codex-like",
-            "codex like",
-            "long coding",
-            "long-running",
-            "long running",
-        )
-        return any(marker in text for marker in markers)
+        return is_harness_improvement_goal(run.goal, state.goal)
 
     def _objective_readiness_actions(self, objective_readiness: Any, *, limit: int = 3) -> list[str]:
         actions = [
@@ -2750,6 +3318,7 @@ class AgentLoopEngine:
         state = run.state
         self._ensure_acceptance_evidence(state)
         state.action_context = build_action_context_pack(run.model_copy(update={"state": state}))
+        artifact_pending = bool(expected_artifact_suffix(run, state) and not expected_artifact_exists(run, state))
         retry_action = self._action_from_post_action_retry(run, state)
         if retry_action:
             state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=retry_action)
@@ -2762,7 +3331,7 @@ class AgentLoopEngine:
                 output_keys=["tool", "args", "thought_summary"],
             )
             return retry_action
-        objective_action = self._action_from_objective_readiness_task(run, state)
+        objective_action = None if artifact_pending else self._action_from_objective_readiness_task(run, state)
         if objective_action:
             state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=objective_action)
             self._add_model_interaction(
@@ -2774,7 +3343,20 @@ class AgentLoopEngine:
                 output_keys=["tool", "args", "thought_summary"],
             )
             return objective_action
-        recommended = self._recommended_tool_action(state, source="harness")
+        if artifact_pending and (state.step_count > 0 or state.tool_calls or state.completed_steps):
+            artifact_action = artifact_creation_action(run, state)
+            if artifact_action:
+                state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=artifact_action)
+                self._add_model_interaction(
+                    state,
+                    kind="action",
+                    ok=True,
+                    summary=f"Harness selected artifact creation tool: {artifact_action['tool']}.",
+                    attempts=0,
+                    output_keys=["tool", "args", "thought_summary"],
+                )
+                return artifact_action
+        recommended = self._recommended_tool_action(state, source="harness", suppress_verification=artifact_pending)
         if recommended and (state.step_count > 0 or state.tool_calls or state.completed_steps):
             state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=recommended)
             self._add_model_interaction(
@@ -2793,6 +3375,11 @@ class AgentLoopEngine:
 
         action_context_text = state.action_context.compact_prompt or build_action_context_pack(run.model_copy(update={"state": state})).compact_prompt
         recommendation_text = self._recommendation_prompt_text(state)
+        artifact_instruction = (
+            "The requested deliverable artifact is not present yet. Create or edit the artifact before choosing verification tools.\n"
+            if artifact_pending
+            else ""
+        )
         prompt = (
             "Choose the next safe tool action for AgentOrinth running Ornith. "
             "Return one strict JSON object with keys: tool, args, thought_summary. "
@@ -2802,6 +3389,7 @@ class AgentLoopEngine:
             "Use file_read for orientation, patch_propose before patch_apply, and run_tests/git_diff for verification.\n\n"
             f"Original goal: {run.goal}\nActive goal: {state.goal}\n"
             f"Ornith action context:\n{action_context_text}\n\n"
+            f"{artifact_instruction}"
             f"Acceptance proof recommendations:\n{recommendation_text}\n"
             f"Compiled context:\n{memory_text[: self.model_profile.action_context_chars]}"
         )
@@ -2843,7 +3431,12 @@ class AgentLoopEngine:
                 error = str(parsed_error.get("error") or error)
             except (json.JSONDecodeError, AttributeError, TypeError):
                 pass
-        recommendation_fallback = self._recommended_tool_action(state, allow_ask_user=True, source="fallback")
+        recommendation_fallback = self._recommended_tool_action(
+            state,
+            allow_ask_user=True,
+            source="fallback",
+            suppress_verification=artifact_pending,
+        )
         if recommendation_fallback:
             fallback = recommendation_fallback
         elif state.web_enabled and any(term in state.goal.lower() for term in ("internet", "web", "latest", "search")):
@@ -2883,9 +3476,12 @@ class AgentLoopEngine:
         *,
         allow_ask_user: bool = False,
         source: str = "harness",
+        suppress_verification: bool = False,
     ) -> dict[str, Any] | None:
         rank_run = RunRecord(id="rank", title="rank", goal=state.goal, status="queued", workspace_path="", state=state, created_at="", updated_at="")
         for item in rank_acceptance_recommendations(rank_run):
+            if suppress_verification and item.label == "verification":
+                continue
             if not item.available and not allow_ask_user:
                 continue
             if item.tool_kind == "patch_propose":
@@ -3002,11 +3598,11 @@ class AgentLoopEngine:
             return ToolResult(False, tool_name, "Browser tools are disabled for this run.", args)
         if tool_name.startswith("desktop_") and not state.desktop_enabled:
             return ToolResult(False, tool_name, "Desktop tools are disabled for this run.", args)
-        runner = ToolRunner(Path(run.workspace_path), self.config)
+        runner = ToolRunner(Path(run.workspace_path), self.config, approval_mode=state.approval_mode)
         return await runner.execute(tool_name, args)
 
     async def _verify(self, run: RunRecord, state: RunState) -> ToolResult:
-        runner = ToolRunner(Path(run.workspace_path), self.config)
+        runner = ToolRunner(Path(run.workspace_path), self.config, approval_mode=state.approval_mode)
         if state.files_touched:
             return await runner.execute("git_diff", {})
         if state.commands_run:
@@ -3725,7 +4321,12 @@ class AgentLoopEngine:
         label: str,
         state: RunState,
     ) -> AcceptanceEvidenceRecommendation:
-        test_command = state.repo_map.test_commands[0] if state.repo_map.test_commands else "python -m pytest"
+        artifact_command = artifact_verification_command(
+            RunRecord(id="recommendation", title="", goal=state.goal, status="queued", workspace_path="", state=state, created_at="", updated_at=""),
+            state,
+            item.criterion,
+        )
+        test_command = artifact_command or (state.repo_map.test_commands[0] if state.repo_map.test_commands else "python -m pytest")
         if label == "verification":
             return AcceptanceEvidenceRecommendation(
                 id=f"{item.id}-verification",
@@ -3735,7 +4336,11 @@ class AgentLoopEngine:
                 tool_kind="run_tests",
                 action=f"Run the smallest relevant verification command: {test_command}",
                 command_hint=test_command,
-                reason="Criterion still needs test/build/lint proof.",
+                reason=(
+                    "Criterion still needs artifact existence/load proof."
+                    if artifact_command
+                    else "Criterion still needs test/build/lint proof."
+                ),
             )
         if label == "checkpoint":
             return AcceptanceEvidenceRecommendation(
@@ -4251,6 +4856,13 @@ class AgentLoopEngine:
             refused_event_id=report.refused_event_id,
             accepted_event_id=report.accepted_event_id,
             completed_event_id=report.completed_event_id,
+            self_scaffold_reviewed=report.self_scaffold_reviewed,
+            self_scaffold_review_event_id=report.self_scaffold_review_event_id,
+            self_scaffold_reviewed_change_count=report.self_scaffold_reviewed_change_count,
+            post_review_handoff_goal_preserved=report.post_review_handoff_goal_preserved,
+            post_review_handoff_next_action_preserved=report.post_review_handoff_next_action_preserved,
+            post_review_resume_prompt_goal_preserved=report.post_review_resume_prompt_goal_preserved,
+            post_review_resume_prompt_next_action_preserved=report.post_review_resume_prompt_next_action_preserved,
             step_count=len(report.steps),
             passed_steps=sum(1 for step in report.steps if step.status == "passed"),
             failed_steps=sum(1 for step in report.steps if step.status == "failed"),
@@ -4351,6 +4963,9 @@ class AgentLoopEngine:
             web_sources=state.web_sources[-10:],
             desktop_state=state.desktop_snapshots[-5:],
             source_evidence=source_evidence,
+            self_scaffold=state.self_scaffold,
+            self_scaffold_reviews=state.self_scaffold_reviews,
+            self_scaffold_rollback_intents=state.self_scaffold_rollback_intents,
             action_context=action_context,
             current_task_id=state.current_task_id,
             task_graph=state.task_graph[-12:],
@@ -4766,6 +5381,7 @@ class AgentLoopEngine:
         supervisor_report: dict[str, Any],
         *,
         limit: int = 12,
+        queue_filter: str = "all",
     ) -> OperatorActionQueueReport:
         items: list[OperatorActionQueueItem] = []
 
@@ -4941,6 +5557,50 @@ class AgentLoopEngine:
                             f"latest={source_evidence.get('latest_evidence') or 'none'}",
                         ],
                     )
+                elif reason == "self_scaffold":
+                    scaffold = run_entry.get("self_scaffold") if isinstance(run_entry.get("self_scaffold"), dict) else {}
+                    add_item(
+                        run_entry,
+                        reason=reason,
+                        action=str(run_entry.get("self_scaffold_action") or "Review self-scaffold change intent before broad autonomy."),
+                        endpoint=f"/api/runs/{run_id}/replay",
+                        method="GET",
+                        ui_target="self_scaffold",
+                        details=[
+                            f"self_scaffold={scaffold.get('status') or 'unknown'}",
+                            f"changes={scaffold.get('change_count') or 0}",
+                            f"guards={scaffold.get('guard_count') or 0}",
+                            str(scaffold.get("latest_change") or "latest=none")[:180],
+                        ],
+                    )
+                elif reason == "self_scaffold_rollback":
+                    rollback_action = self._self_scaffold_rollback_operator_action(run_entry)
+                    if rollback_action:
+                        add_item(
+                            run_entry,
+                            reason=rollback_action["reason"],
+                            action=rollback_action["action"],
+                            endpoint=rollback_action["endpoint"],
+                            method=rollback_action["method"],
+                            ui_target=rollback_action["ui_target"],
+                            approval_kind=str(rollback_action.get("approval_kind") or ""),
+                            details=rollback_action["details"],
+                        )
+                    else:
+                        rollback_report = run_entry.get("self_scaffold_rollback_intents") if isinstance(run_entry.get("self_scaffold_rollback_intents"), dict) else {}
+                        add_item(
+                            run_entry,
+                            reason=reason,
+                            action=str(run_entry.get("self_scaffold_rollback_action") or "Review self-scaffold rollback intent before continuing."),
+                            endpoint=f"/api/runs/{run_id}/self-scaffold-rollback-intents",
+                            method="GET",
+                            ui_target="self_scaffold_rollback",
+                            details=[
+                                f"rollback_status={rollback_report.get('status') or 'unknown'}",
+                                f"intents={rollback_report.get('intent_count') or 0}",
+                                f"patch_rollbacks={rollback_report.get('patch_rollback_count') or 0}",
+                            ],
+                        )
                 elif reason == "health_wait_approval":
                     if emitted_review_approval or "approval" in reason_set or "waiting_approval" in reason_set:
                         continue
@@ -5006,6 +5666,18 @@ class AgentLoopEngine:
                         ui_target="run",
                     )
 
+        if queue_filter == "promotion_approvals":
+            items = [item for item in items if item.ui_target == "patch_apply_approval" or item.reason.startswith("promotion")]
+        elif queue_filter == "proof_reviews":
+            proof_review_reasons = {
+                "readiness_proof_history",
+                "readiness_source_refs",
+                "source_evidence",
+                "desktop_effect_proof",
+                "self_scaffold_rollback",
+            }
+            items = [item for item in items if item.reason in proof_review_reasons]
+
         items.sort(
             key=lambda item: (
                 1 if item.severity == "blocked" else 0,
@@ -5037,11 +5709,61 @@ class AgentLoopEngine:
                 or item.reason in {"ornith_preflight_readiness_smoke", "ornith_preflight_operator_dispatch_restart_smoke"}
             ),
             preflight_count=sum(1 for item in items if item.reason.startswith("ornith_preflight")),
+            self_scaffold_count=sum(1 for item in items if item.reason == "self_scaffold"),
+            self_scaffold_rollback_count=sum(1 for item in items if item.reason == "self_scaffold_rollback"),
             recovery_count=sum(1 for item in items if item.reason in {"recovery", "health_recover"}),
             blocker_count=sum(1 for item in items if item.reason in {"blocker", "blocked", "error", "health_ask_user"}),
             summary=summary,
             items=items[:limit],
         )
+
+    def _self_scaffold_rollback_operator_action(self, run_entry: dict[str, Any]) -> dict[str, Any] | None:
+        run_id = str(run_entry.get("run_id") or "")
+        report = run_entry.get("self_scaffold_rollback_intents") if isinstance(run_entry.get("self_scaffold_rollback_intents"), dict) else {}
+        entries = report.get("entries") if isinstance(report.get("entries"), list) else []
+        rollback = next(
+            (
+                entry
+                for entry in entries
+                if isinstance(entry, dict)
+                and entry.get("action_kind") == "patch_rollback"
+                and entry.get("status") == "needs_approval"
+                and str(entry.get("patch_id") or "")
+            ),
+            None,
+        )
+        if rollback is None:
+            return None
+        patch_id = str(rollback.get("patch_id") or "")
+        files = rollback.get("files") if isinstance(rollback.get("files"), list) else []
+        details = [
+            f"patch_id={patch_id}",
+            f"backup_id={rollback.get('backup_id') or 'missing'}",
+            f"review_event={rollback.get('source_review_event_id') or 0}",
+            "no_auto_mutation=true",
+            "files=" + ",".join(str(file) for file in files[:3]),
+        ]
+        return {
+            "reason": "self_scaffold_rollback",
+            "action": str(run_entry.get("self_scaffold_rollback_action") or f"Request approval to rollback patch {patch_id} from self-scaffold review."),
+            "endpoint": f"/api/runs/{run_id}/patches/{patch_id}/rollback",
+            "method": "POST",
+            "ui_target": "patch_rollback_approval",
+            "approval_kind": "patch_rollback",
+            "details": details,
+        }
+
+    def _patch_id_from_apply_endpoint(self, endpoint: str) -> str:
+        parts = str(endpoint or "").strip("/").split("/")
+        if len(parts) >= 5 and parts[-1] == "apply" and parts[-3] == "patches":
+            return parts[-2]
+        return ""
+
+    def _patch_id_from_rollback_endpoint(self, endpoint: str) -> str:
+        parts = str(endpoint or "").strip("/").split("/")
+        if len(parts) >= 5 and parts[-1] == "rollback" and parts[-3] == "patches":
+            return parts[-2]
+        return ""
 
     def _ornith_preflight_item_covered_by_reason(self, item_id: str, reason_set: set[str]) -> bool:
         if item_id == "readiness_smoke" and "readiness_smoke" in reason_set:
@@ -5149,6 +5871,10 @@ class AgentLoopEngine:
             score += 35
         if run_entry.get("source_evidence_requires_attention"):
             score += 18
+        if run_entry.get("self_scaffold_requires_attention"):
+            score += 30
+        if run_entry.get("self_scaffold_rollback_requires_attention"):
+            score += 34
         if run_entry.get("action") not in {"unchanged", "live_lease_preserved"}:
             score += 20
         if int(run_entry.get("pending_approvals") or 0):
@@ -5203,6 +5929,16 @@ class AgentLoopEngine:
             action = action or str(run_entry.get("source_evidence_action") or "Capture missing web/browser source evidence.")
             if severity == "none":
                 severity = "watch"
+        if run_entry.get("self_scaffold_requires_attention"):
+            reasons.append("self_scaffold")
+            action = action or str(run_entry.get("self_scaffold_action") or "Review self-scaffold change intent before broad autonomy.")
+            if severity == "none":
+                severity = "watch"
+        if run_entry.get("self_scaffold_rollback_requires_attention"):
+            reasons.append("self_scaffold_rollback")
+            action = action or str(run_entry.get("self_scaffold_rollback_action") or "Review self-scaffold rollback intent before broad autonomy.")
+            if severity == "none":
+                severity = "watch"
         if state.recovery_plan.status == "active":
             reasons.append("recovery")
             action = action or state.recovery_plan.next_action or "Resume or replan active recovery."
@@ -5228,6 +5964,13 @@ class AgentLoopEngine:
             severity = "blocked" if health_action in {"wait_approval", "ask_user", "recover"} else "watch"
 
         reasons = list(dict.fromkeys(reasons))
+        self_scaffold_attention_only = bool(
+            (run_entry.get("self_scaffold_requires_attention") or run_entry.get("self_scaffold_rollback_requires_attention"))
+            and not int(run_entry.get("pending_approvals") or 0)
+            and run_entry.get("status") not in {"waiting_approval", "waiting_goal_confirmation", "blocked", "error"}
+        )
+        if self_scaffold_attention_only and severity == "blocked":
+            severity = "watch"
         run_entry["operator_attention_required"] = bool(reasons)
         run_entry["operator_attention_reasons"] = reasons
         run_entry["operator_attention_action"] = action
@@ -5745,13 +6488,3 @@ def re_words(text: str) -> list[str]:
     import re
 
     return re.findall(r"[a-z0-9_-]{3,}", text.lower())
-
-
-
-
-
-
-
-
-
-

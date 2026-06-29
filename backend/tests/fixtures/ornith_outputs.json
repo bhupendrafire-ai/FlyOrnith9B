@@ -1,0 +1,20 @@
+[
+  {
+    "name": "fenced_tool_action",
+    "text": "```json\n{\"tool\":\"git_status\",\"args\":{},\"thought_summary\":\"Check repo state.\"}\n```",
+    "expected_key": "tool",
+    "expected_value": "git_status"
+  },
+  {
+    "name": "prose_wrapped_critic",
+    "text": "The risk review is: {\"risk\":\"\"}",
+    "expected_key": "risk",
+    "expected_value": ""
+  },
+  {
+    "name": "goal_review",
+    "text": "{\"should_update\":false,\"proposed_goal\":\"\",\"reason\":\"No material scope change.\"}",
+    "expected_key": "should_update",
+    "expected_value": false
+  }
+]

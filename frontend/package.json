@@ -1,0 +1,31 @@
+{
+  "name": "agentorinth-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "build": "tsc && vite build",
+    "test:source-ref-gate": "node ../tools/src/smoke-readiness-source-ref-dashboard.mjs",
+    "test:goal-confirmation": "node ../tools/src/smoke-goal-confirmation-dashboard.mjs",
+    "test:patch-approval": "node ../tools/src/smoke-patch-approval-dashboard.mjs",
+    "test:desktop-approval": "node ../tools/src/smoke-desktop-approval-dashboard.mjs",
+    "test:desktop-effect-proof": "node ../tools/src/smoke-desktop-effect-proof-dashboard.mjs",
+    "test:self-scaffold": "node ../tools/src/smoke-self-scaffold-dashboard.mjs",
+    "test:source-promotion": "node ../tools/src/smoke-source-promotion-dashboard.mjs",
+    "test:dashboard-smokes": "npm run test:source-ref-gate && npm run test:goal-confirmation && npm run test:desktop-approval && npm run test:desktop-effect-proof && npm run test:self-scaffold && npm run test:patch-approval && npm run test:source-promotion",
+    "preview": "vite preview --host 127.0.0.1 --port 4173"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

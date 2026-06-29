@@ -1,0 +1,65 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, "..", "..");
+const frontendRoot = join(repoRoot, "frontend");
+const appSource = await readFile(join(frontendRoot, "src", "App.tsx"), "utf8");
+const apiSource = await readFile(join(frontendRoot, "src", "api.ts"), "utf8");
+
+assert.match(apiSource, /SelfScaffoldReviewRecord/);
+assert.match(apiSource, /SelfScaffoldReviewReport/);
+assert.match(apiSource, /SelfScaffoldRollbackIntentRecord/);
+assert.match(apiSource, /SelfScaffoldRollbackIntentReport/);
+assert.match(apiSource, /self_scaffold_rollback_intents: SelfScaffoldRollbackIntentReport/);
+assert.match(apiSource, /self_scaffold_rollback_requires_attention: boolean/);
+assert.match(apiSource, /self_scaffold_rollback_count: number/);
+assert.match(apiSource, /self_scaffold_rollback_attention_count: number/);
+assert.match(apiSource, /self_scaffold_reviews: SelfScaffoldReviewReport/);
+assert.match(apiSource, /remaining_goal_review/);
+assert.match(apiSource, /latest_reviewed_change_ids/);
+
+assert.ok(appSource.includes('Panel title="Self Scaffold"'));
+assert.match(appSource, /selfScaffoldReviews/);
+assert.match(appSource, /selfScaffoldRollbackIntents/);
+assert.match(appSource, /replay\?\.self_scaffold_reviews/);
+assert.match(appSource, /selected\?\.state\.self_scaffold_reviews/);
+assert.match(appSource, /selected\?\.state\.handoff_summary\.self_scaffold_reviews/);
+assert.match(appSource, /self_scaffold_reviews: replayResult\.self_scaffold_reviews/);
+assert.match(appSource, /self_scaffold_rollback_intents: replayResult\.self_scaffold_rollback_intents/);
+assert.match(appSource, /self_scaffold_reviews: replayResult\.handoff\.self_scaffold_reviews/);
+assert.match(appSource, /self_scaffold_rollback_intents: replayResult\.handoff\.self_scaffold_rollback_intents/);
+assert.ok(appSource.includes("No self-scaffold review outcomes."));
+assert.ok(appSource.includes("No review outcome rows."));
+assert.ok(appSource.includes("goal reviews remaining"));
+assert.ok(appSource.includes("rollback intents:"));
+assert.ok(appSource.includes("patch rollback candidates:"));
+assert.ok(appSource.includes("self scaffold rollback:"));
+assert.ok(appSource.includes("Request Rollback"));
+assert.ok(appSource.includes("patch_rollback_approval"));
+assert.ok(appSource.includes("self_scaffold_rollback"));
+assert.ok(appSource.includes("steering intents:"));
+assert.ok(appSource.includes("No self-scaffold rollback intents."));
+assert.ok(appSource.includes("No rollback intent rows."));
+assert.match(appSource, /reviews: \$\{selfScaffoldReviews\.status\}/);
+assert.match(appSource, /accepted: \$\{selfScaffoldReviews\.accepted_count\}/);
+assert.match(appSource, /reviewed changes: \$\{selfScaffoldReviews\.reviewed_change_count\}/);
+assert.match(appSource, /review #\$\{entry\.event_id\} \$\{entry\.status\}/);
+assert.match(appSource, /entry\.remaining_goal_review/);
+assert.match(appSource, /selfScaffoldReviews\.recommended_action/);
+assert.match(appSource, /selfScaffoldRollbackIntents\.recommended_action/);
+assert.match(appSource, /entry\.mutation_automatic/);
+assert.match(appSource, /entry\.requires_approval/);
+
+const panelIndex = appSource.indexOf('Panel title="Self Scaffold"');
+const reviewsIndex = appSource.indexOf("selfScaffoldReviews?.total_count");
+const rollbackIndex = appSource.indexOf("selfScaffoldRollbackIntents?.intent_count");
+const changesIndex = appSource.indexOf("No scaffold changes.");
+assert.ok(panelIndex > -1, "Self Scaffold panel is missing");
+assert.ok(reviewsIndex > panelIndex, "review outcomes must render inside the Self Scaffold panel");
+assert.ok(rollbackIndex > reviewsIndex, "rollback intents should render after review outcomes");
+assert.ok(changesIndex > rollbackIndex, "rollback intents should be visible before raw scaffold changes");
+
+console.log("self-scaffold dashboard smoke passed");

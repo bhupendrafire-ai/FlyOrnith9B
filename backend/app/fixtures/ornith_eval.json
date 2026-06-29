@@ -1,0 +1,49 @@
+[
+  {
+    "id": "fenced_git_status_action",
+    "kind": "action",
+    "text": "```json\n{\"tool\":\"git_status\",\"args\":{},\"thought_summary\":\"Check repo state.\"}\n```",
+    "expect_tool": "git_status"
+  },
+  {
+    "id": "prose_wrapped_inspect_alias",
+    "kind": "action",
+    "text": "I will inspect first: {\"action\":\"inspect_workspace\",\"args\":null,\"summary\":\"Look around.\"}",
+    "expect_tool": "file_read"
+  },
+  {
+    "id": "unknown_tool_fallback",
+    "kind": "action",
+    "text": "{\"tool\":\"invent_magic\",\"args\":{},\"thought_summary\":\"Try impossible tool.\"}",
+    "expect_fallback": true
+  },
+  {
+    "id": "patch_first_good_edit",
+    "kind": "action",
+    "text": "{\"tool\":\"patch_propose\",\"args\":{\"title\":\"Update greeting\",\"diff\":\"--- a/app.py\\n+++ b/app.py\\n@@\\n-print('hi')\\n+print('hello')\\n\"},\"thought_summary\":\"Propose a reviewed diff.\"}",
+    "expect_tool": "patch_propose",
+    "edit_intent": true
+  },
+  {
+    "id": "patch_first_file_write_violation",
+    "kind": "action",
+    "text": "{\"tool\":\"file_write\",\"args\":{\"path\":\"app.py\",\"content\":\"print('hello')\\n\"},\"thought_summary\":\"Write the file directly.\"}",
+    "expect_tool": "file_write",
+    "edit_intent": true,
+    "expect_patch_first_ok": false
+  },
+  {
+    "id": "prose_wrapped_critic",
+    "kind": "critic",
+    "text": "The risk review is: {\"risk\":\"\"}",
+    "expected_key": "risk",
+    "expected_value": ""
+  },
+  {
+    "id": "goal_review_keep_current",
+    "kind": "goal",
+    "text": "{\"should_update\":false,\"proposed_goal\":\"\",\"reason\":\"No material scope change.\"}",
+    "expected_key": "should_update",
+    "expected_value": false
+  }
+]
