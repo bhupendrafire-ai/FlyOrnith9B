@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .acceptance import compact_label_progress, infer_required_labels
+from .artifact_verification import expected_artifact_suffix
 from .schemas import (
     AcceptanceCriterionEvidence,
     CompletionAuditIssue,
@@ -28,6 +29,7 @@ def build_completion_audit(
     next_actions: list[str] = []
     pending_approvals = [approval for approval in approvals if approval.get("status") == "pending"]
     stale = _stale_evidence(evidence, run.state.tool_calls, stale_edit_tools or EDIT_LIKE_TOOLS)
+    html_quality_issues = _html_render_quality_issues(run)
 
     if run.state.acceptance_criteria and not all(item.status == "verified" for item in evidence):
         open_items = [item.criterion for item in evidence if item.status == "open"]
@@ -89,6 +91,17 @@ def build_completion_audit(
             )
         )
         next_actions.append("Resolve pending approvals in the dashboard.")
+
+    if html_quality_issues:
+        issues.append(
+            CompletionAuditIssue(
+                id="html_render_quality",
+                severity="blocker",
+                summary="Rendered HTML artifact has visible quality issues.",
+                evidence=html_quality_issues[:6],
+            )
+        )
+        next_actions.append("Fix the rendered HTML artifact and recapture browser proof.")
 
     if run.state.blockers:
         issues.append(
@@ -198,6 +211,26 @@ def _evidence_for_run(run: RunRecord) -> list[AcceptanceCriterionEvidence]:
             }
         evidence.append(item)
     return evidence
+
+
+def _html_render_quality_issues(run: RunRecord) -> list[str]:
+    if expected_artifact_suffix(run, run.state) != ".html":
+        return []
+    browser_calls = [call for call in run.state.tool_calls if call.name == "browser_screenshot" and call.ok]
+    if not browser_calls:
+        return []
+    latest = browser_calls[-1]
+    args = latest.args or {}
+    visible_text = str(args.get("visible_text") or "")
+    console_errors = [str(item) for item in args.get("console_errors") or [] if str(item).strip()]
+    issues: list[str] = []
+    lowered = f" {visible_text.lower()} "
+    for token in ("undefined", "nan", "[object object]"):
+        if token in lowered:
+            issues.append(f"Visible browser text contains placeholder/runtime value: {token}.")
+    if console_errors:
+        issues.extend(f"Browser console error: {item}" for item in console_errors[:3])
+    return issues
 
 
 def _stale_evidence(

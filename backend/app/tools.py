@@ -818,11 +818,19 @@ class ToolRunner:
             return ToolResult(False, "browser_screenshot", "Playwright is not installed.", {"url": url})
 
         shot_path = self.artifact_dir / f"browser-{uuid4().hex[:8]}.png"
+        visible_text = ""
+        console_errors: list[str] = []
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True, executable_path=self.config.browser_executable_path)
                 page = await browser.new_page(viewport={"width": 1440, "height": 1000})
+                page.on("console", lambda msg: console_errors.append(msg.text[:500]) if msg.type == "error" else None)
                 await page.goto(url, wait_until="domcontentloaded", timeout=self.config.web_timeout_seconds * 1000)
+                await page.wait_for_timeout(300)
+                try:
+                    visible_text = (await page.locator("body").inner_text(timeout=1000))[:4000]
+                except Exception:
+                    visible_text = ""
                 await page.screenshot(path=str(shot_path), full_page=True)
                 await browser.close()
         except Exception as exc:
@@ -835,7 +843,13 @@ class ToolRunner:
             path=str(shot_path),
             summary=f"Captured browser screenshot for {url}.",
         )
-        return ToolResult(True, "browser_screenshot", snapshot.summary, {"url": url, "path": str(shot_path)}, desktop_snapshots=[snapshot])
+        return ToolResult(
+            True,
+            "browser_screenshot",
+            snapshot.summary,
+            {"url": url, "path": str(shot_path), "visible_text": visible_text, "console_errors": console_errors[-8:]},
+            desktop_snapshots=[snapshot],
+        )
 
     async def desktop_window_list(self) -> ToolResult:
         command = (

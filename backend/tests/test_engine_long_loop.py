@@ -2036,6 +2036,35 @@ def test_completion_audit_blocks_open_criteria_and_pending_approval(tmp_path: Pa
     assert {issue["id"] for issue in audit["issues"]} >= {"acceptance_not_verified", "pending_approvals"}
 
 
+def test_completion_audit_blocks_rendered_html_placeholders(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Build a browser web app.",
+        "HTML quality",
+        str(tmp_path),
+        ["The page loads in a browser."],
+    )
+    run.state.acceptance_evidence[0].status = "verified"
+    run.state.acceptance_evidence[0].required_labels = ["browser"]
+    run.state.acceptance_evidence[0].matched_labels = ["browser"]
+    run.state.tool_calls.append(
+        ToolCallRecord(
+            id="tool-browser",
+            name="browser_screenshot",
+            ok=True,
+            summary="Captured browser screenshot.",
+            args={"visible_text": "KeySynth undefined undefined", "console_errors": []},
+            created_at="2026-06-29T00:00:00+00:00",
+        )
+    )
+    engine.store.update_run(run.id, state=run.state)
+
+    audit = engine.get_completion_audit(run.id)
+
+    assert not audit["can_finish"]
+    assert any(issue["id"] == "html_render_quality" for issue in audit["issues"])
+
+
 def test_completion_audit_flags_stale_verified_evidence_after_edit(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     run = engine.store.create_run("Audit stale evidence", "Stale audit", str(tmp_path), ["Tests pass"])
