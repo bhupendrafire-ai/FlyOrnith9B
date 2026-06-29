@@ -3137,7 +3137,7 @@ def test_harness_smoke_gates_apply_to_agentorinth_code_work(tmp_path: Path) -> N
     assert engine._is_harness_improvement_goal(created, created.state) is True
 
 
-def test_choose_action_scaffolds_missing_pptx_artifact(tmp_path: Path) -> None:
+def test_choose_action_does_not_scaffold_missing_pptx_artifact(tmp_path: Path) -> None:
     async def run() -> None:
         engine = make_engine(tmp_path)
         created = engine.store.create_run(
@@ -3151,14 +3151,15 @@ def test_choose_action_scaffolds_missing_pptx_artifact(tmp_path: Path) -> None:
 
         action = await engine._choose_action(created, "compact context")
 
-        assert action["tool"] == "file_write"
-        assert action["args"]["path"] == "_agentornith_create_pptx.py"
-        assert "AgentOrnith_use_cases.pptx" in action["args"]["content"]
+        assert not (
+            action["tool"] == "file_write"
+            and action["args"].get("path") == "_agentornith_create_pptx.py"
+        )
 
     asyncio.run(run())
 
 
-def test_choose_action_runs_existing_pptx_scaffold(tmp_path: Path) -> None:
+def test_choose_action_ignores_existing_pptx_scaffold(tmp_path: Path) -> None:
     async def run() -> None:
         engine = make_engine(tmp_path)
         created = engine.store.create_run(
@@ -3173,8 +3174,10 @@ def test_choose_action_runs_existing_pptx_scaffold(tmp_path: Path) -> None:
 
         action = await engine._choose_action(created, "compact context")
 
-        assert action["tool"] == "shell"
-        assert "_agentornith_create_pptx.py" in action["args"]["command"]
+        assert not (
+            action["tool"] == "shell"
+            and "_agentornith_create_pptx.py" in action["args"].get("command", "")
+        )
 
     asyncio.run(run())
 
