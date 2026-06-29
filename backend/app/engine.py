@@ -2658,6 +2658,22 @@ class AgentLoopEngine:
             return
 
         if state.milestone == "verify":
+            if self._should_defer_artifact_verification(run, state):
+                state.latest_summary = "Verification deferred: the requested deliverable artifact does not exist yet."
+                state.next_step = "Create the requested artifact before running verification."
+                state.milestone = "act"
+                await self._workstream(
+                    run_id,
+                    phase="verify",
+                    role="harness",
+                    title="Verification Deferred",
+                    summary=state.latest_summary,
+                    rationale="Artifact verification would only prove the workspace is still empty.",
+                    next_action=state.next_step,
+                    severity="watch",
+                )
+                await self._save_state(run, state, "verification_deferred", state.latest_summary)
+                return
             result = await self._verify(run, state)
             await self._record_tool_result(run_id, result)
             run = self.store.get_run(run_id)
@@ -3546,7 +3562,7 @@ class AgentLoopEngine:
                 output_keys=["tool", "args", "thought_summary"],
             )
             return recommended
-        if state.step_count == 0 and not state.tool_calls:
+        if state.step_count == 0 and not state.tool_calls and not artifact_pending:
             initial_action = {"tool": "file_read", "args": {"path": "."}, "thought_summary": "Inspect workspace file list first."}
             state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=initial_action)
             return initial_action
@@ -3554,7 +3570,7 @@ class AgentLoopEngine:
         action_context_text = state.action_context.compact_prompt or build_action_context_pack(run.model_copy(update={"state": state})).compact_prompt
         recommendation_text = self._recommendation_prompt_text(state)
         artifact_instruction = (
-            "The requested deliverable artifact is not present yet. Create or edit the artifact before choosing verification tools.\n"
+            "artifact_missing: author the deliverable now with file_write or patch_apply; read-only proof waits for files.\n"
             if artifact_pending
             else ""
         )
@@ -3586,6 +3602,9 @@ class AgentLoopEngine:
             raw_excerpt = str(metadata.get("raw_excerpt") or "")
             normalized = normalize_model_action(action)
             if normalized.action:
+                if artifact_pending and self._artifact_action_is_nonproductive_before_files(state, normalized.action):
+                    error = f"Model chose {normalized.action.get('tool')} before creating the requested artifact."
+                    raise ValueError(error)
                 traced_action = self._trace_action_if_recommended(state, normalized.action, source="model")
                 state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=traced_action)
                 self._add_model_interaction(
@@ -3617,6 +3636,15 @@ class AgentLoopEngine:
         )
         if recommendation_fallback:
             fallback = recommendation_fallback
+        elif artifact_pending:
+            fallback = {
+                "tool": "ask_user",
+                "args": {
+                    "question": "Ornith did not return a valid artifact-creation action. Ask it to create the requested files with file_write.",
+                    "reason": error or "Artifact is missing and verification/read-only tools would not make progress.",
+                },
+                "thought_summary": "Pause instead of pretending read-only or verification tools created the requested artifact.",
+            }
         elif state.web_enabled and any(term in state.goal.lower() for term in ("internet", "web", "latest", "search")):
             fallback = {"tool": "web_search", "args": {"query": state.goal, "limit": 5}}
         else:
@@ -3802,6 +3830,28 @@ class AgentLoopEngine:
             return ToolResult(True, "run_tests", "Latest command result was recorded; no extra verification command selected.", {})
         return await runner.execute("git_status", {})
 
+    def _should_defer_artifact_verification(self, run: RunRecord, state: RunState) -> bool:
+        return bool(
+            expected_artifact_suffix(run, state)
+            and not expected_artifact_exists(run, state)
+            and not state.files_touched
+        )
+
+    def _artifact_action_is_nonproductive_before_files(self, state: RunState, action: dict[str, Any]) -> bool:
+        if self._has_workspace_material_for_browser_proof(state):
+            return False
+        tool = str(action.get("tool") or action.get("action") or "")
+        return tool in {
+            "browser_open",
+            "browser_screenshot",
+            "desktop_screenshot",
+            "file_read",
+            "git_diff",
+            "git_status",
+            "run_tests",
+            "shell",
+        }
+
     async def _critic_review(self, run: RunRecord, state: RunState) -> str:
         if not state.tool_calls:
             return ""
@@ -3901,7 +3951,8 @@ class AgentLoopEngine:
                 touched = result.data.get("files")
                 if isinstance(touched, list):
                     state.files_touched.extend(str(item) for item in touched)
-            self._set_task_status(state, state.current_task_id, "completed", result.summary)
+            if self._result_advances_current_task(state, result):
+                self._set_task_status(state, state.current_task_id, "completed", result.summary)
         elif not result.needs_approval:
             failure_kind = self._classify_failure(result)
             count = state.failure_counts.get(result.kind, 0) + 1
@@ -6457,7 +6508,15 @@ class AgentLoopEngine:
         for index, step in enumerate(plan[:12], start=1):
             lowered = step.lower()
             kind = "verify" if "verify" in lowered or "test" in lowered or "check" in lowered else "investigate"
-            if "edit" in lowered or "patch" in lowered or "change" in lowered or "implement" in lowered:
+            if (
+                "build" in lowered
+                or "create" in lowered
+                or "edit" in lowered
+                or "implement" in lowered
+                or "patch" in lowered
+                or "write" in lowered
+                or "change" in lowered
+            ):
                 kind = "edit"
             if "summar" in lowered or "checkpoint" in lowered or "handoff" in lowered:
                 kind = "summarize"
@@ -6481,6 +6540,27 @@ class AgentLoopEngine:
                 state.current_task_id = task.id
                 return
         state.current_task_id = state.task_graph[-1].id if state.task_graph else ""
+
+    def _current_task(self, state: RunState) -> TaskNode | None:
+        for task in state.task_graph:
+            if task.id == state.current_task_id:
+                return task
+        return None
+
+    def _result_advances_current_task(self, state: RunState, result: ToolResult) -> bool:
+        task = self._current_task(state)
+        if not task:
+            return True
+        title = task.title.lower()
+        if task.kind == "edit" or any(word in title for word in ("build", "create", "implement", "write")):
+            return result.kind in {"file_write", "patch_apply", "patch_propose", "workspace_promote"}
+        if task.kind == "verify":
+            return result.kind in {"browser_screenshot", "desktop_screenshot", "git_diff", "git_status", "run_tests", "shell"}
+        if task.kind == "summarize":
+            return result.kind in {"checkpoint", "obsidian_checkpoint"}
+        if task.kind == "investigate":
+            return result.kind in {"browser_open", "browser_screenshot", "desktop_screenshot", "file_read", "web_fetch", "web_search"}
+        return True
 
     def _classify_failure(self, result: ToolResult) -> str:
         summary = result.summary.lower()

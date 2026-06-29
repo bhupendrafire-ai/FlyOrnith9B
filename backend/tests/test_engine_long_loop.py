@@ -3156,6 +3156,60 @@ def test_harness_smoke_gates_apply_to_agentorinth_code_work(tmp_path: Path) -> N
     assert engine._is_harness_improvement_goal(created, created.state) is True
 
 
+def test_create_artifact_plan_steps_are_edit_tasks(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+
+    tasks = engine._tasks_from_plan(["Create `index.html` for the synth web app."], [])
+
+    assert tasks[0].kind == "edit"
+
+
+def test_read_only_tool_does_not_complete_edit_task(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Build a browser web app.",
+            "Web app",
+            str(tmp_path),
+            ["A runnable browser web app exists."],
+        )
+        created.state.task_graph = [
+            TaskNode(id="task-1", title="Create `index.html` for the app.", kind="edit", status="in_progress")
+        ]
+        created.state.current_task_id = "task-1"
+        created = engine.store.update_run(created.id, status="running", state=created.state)
+
+        await engine._record_tool_result(created.id, ToolResult(True, "file_read", "Found 0 files.", {}))
+
+        updated = engine.store.get_run(created.id)
+        assert updated.state.task_graph[0].status == "in_progress"
+
+    asyncio.run(run())
+
+
+def test_verify_defers_missing_artifact_until_files_exist(tmp_path: Path) -> None:
+    async def run() -> None:
+        engine = make_engine(tmp_path)
+        created = engine.store.create_run(
+            "Build a browser web app.",
+            "Web app",
+            str(tmp_path),
+            ["A runnable browser web app exists."],
+        )
+        created.state.milestone = "verify"
+        created.state.next_step = "Verify the latest action."
+        created = engine.store.update_run(created.id, status="running", state=created.state)
+
+        await engine._run_one_milestone(created.id)
+
+        updated = engine.store.get_run(created.id)
+        assert updated.state.milestone == "act"
+        assert updated.state.next_step == "Create the requested artifact before running verification."
+        assert not updated.state.tool_calls
+
+    asyncio.run(run())
+
+
 def test_choose_action_does_not_scaffold_missing_pptx_artifact(tmp_path: Path) -> None:
     async def run() -> None:
         engine = make_engine(tmp_path)
