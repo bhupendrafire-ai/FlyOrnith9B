@@ -3443,7 +3443,8 @@ class AgentLoopEngine:
             "Author the missing browser deliverable for FlyOrnith. "
             "Return exactly one JSON object for a file_write tool call. "
             "Put the complete self-contained HTML document in args.content as a valid JSON string. "
-            "Include inline CSS and JavaScript when the goal needs an interactive app.\n\n"
+            "Include compact inline CSS and JavaScript when the goal needs an interactive app. "
+            "Keep it complete but small enough for one local-model response.\n\n"
             f"Goal: {state.goal}\n"
             f"Current task: {current_task_text}\n"
             f"Acceptance criteria:\n{criteria_text}\n\n"
@@ -3459,7 +3460,7 @@ class AgentLoopEngine:
         repaired = False
         raw_excerpt = ""
         try:
-            action, metadata = await self._chat_json_with_metrics(prompt, max_tokens=12000, schema_hint=schema_hint)
+            action, metadata = await self._chat_json_with_metrics(prompt, max_tokens=5000, schema_hint=schema_hint)
             attempts = int(metadata.get("attempts") or 0)
             repaired = bool(metadata.get("repaired"))
             raw_excerpt = str(metadata.get("raw_excerpt") or "")

@@ -43,8 +43,10 @@ class OpenAICompatibleModel:
                     json=payload,
                 )
                 response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise ModelError(str(exc) or f"Timed out after {self.config.model_timeout_seconds:g}s.") from exc
         except httpx.HTTPError as exc:
-            raise ModelError(str(exc)) from exc
+            raise ModelError(str(exc) or exc.__class__.__name__) from exc
 
         data = response.json()
         try:
