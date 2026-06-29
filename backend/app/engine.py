@@ -482,6 +482,17 @@ class AgentLoopEngine:
             state.goal_revision_reason,
             {**approval, "goal_evolution": state.goal_evolution.model_dump()},
         )
+        await self._workstream(
+            run_id,
+            phase="approval",
+            role="operator",
+            title="Goal Confirmation Needed",
+            summary="Ornith proposed an updated goal and needs confirmation before continuing.",
+            rationale=state.goal_revision_reason,
+            next_action=state.next_step,
+            severity="blocked",
+            refs={"approval_id": approval.get("id"), "approval_kind": "goal_update"},
+        )
         return run
 
     async def review_goal(self, run_id: str) -> RunRecord:
@@ -519,6 +530,17 @@ class AgentLoopEngine:
                 "goal_proposed",
                 goal_proposal["reason"],
                 {**approval, "goal_evolution": state.goal_evolution.model_dump()},
+            )
+            await self._workstream(
+                run_id,
+                phase="approval",
+                role="operator",
+                title="Goal Confirmation Needed",
+                summary="Ornith proposed an updated goal and needs confirmation before continuing.",
+                rationale=goal_proposal["reason"],
+                next_action=state.next_step,
+                severity="blocked",
+                refs={"approval_id": approval.get("id"), "approval_kind": "goal_update"},
             )
             return run
 
@@ -2468,6 +2490,14 @@ class AgentLoopEngine:
             heartbeat_task = asyncio.create_task(self._heartbeat_loop(run_id))
             self._heartbeat_tasks[run_id] = heartbeat_task
             await self._event(run_id, "status", "Milestone loop started.")
+            await self._workstream(
+                run_id,
+                phase="orient",
+                role="harness",
+                title="Loop Started",
+                summary="FlyOrnith started the milestone loop and is preparing compact project context.",
+                next_action="Orient from Obsidian, SQLite state, handoff, and recent events.",
+            )
             while True:
                 self._heartbeat_run_lease(run_id, "loop_tick")
                 run = self.store.get_run(run_id)
@@ -2527,6 +2557,15 @@ class AgentLoopEngine:
                 state.task_graph = self._tasks_from_plan(state.current_plan, state.task_graph)
                 state.current_task_id = state.task_graph[0].id if state.task_graph else state.current_task_id
                 state.completed_steps.append("Created milestone plan.")
+                await self._workstream(
+                    run_id,
+                    phase="plan",
+                    role="ornith",
+                    title="Plan Created",
+                    summary=f"Created a compact milestone plan with {len(state.current_plan)} step(s).",
+                    next_action=state.current_plan[0] if state.current_plan else "Choose a safe tool action.",
+                    refs={"plan_steps": len(state.current_plan)},
+                )
             state.latest_summary = "Plan is ready for the next action."
             state.next_step = state.current_plan[0] if state.current_plan else "Choose a safe tool action."
             state.milestone = "act"
@@ -2541,6 +2580,17 @@ class AgentLoopEngine:
                 return
             self._set_task_status(state, state.current_task_id, "in_progress", "Selecting and executing next tool action.")
             action = readiness_action if isinstance(readiness_action, dict) else await self._choose_action(run, state.context_snapshot.prompt_preview)
+            await self._workstream(
+                run_id,
+                phase="act",
+                role="harness",
+                title="Tool Selected",
+                summary=f"Selected `{self._action_tool(action)}` for the next bounded action.",
+                rationale=self._action_rationale(action),
+                next_action="Execute the selected tool and record the result.",
+                tool=self._action_tool(action),
+                refs=self._action_refs(action),
+            )
             run = self.store.update_run(run_id, state=state)
             result = await self._execute_action(run, action)
             await self._record_tool_result(run_id, result, action=action)
@@ -2562,6 +2612,16 @@ class AgentLoopEngine:
                 run = self.store.update_run(run_id, status="paused", state=state)
                 self.memory.append_checkpoint(run, state, "paused")
                 await self._event(run_id, "recovery_plan", state.recovery_plan.summary, {"recovery_plan": state.recovery_plan.model_dump()})
+                await self._workstream(
+                    run_id,
+                    phase="recovery",
+                    role="harness",
+                    title="Recovery Needed",
+                    summary=state.recovery_plan.summary,
+                    next_action=state.recovery_plan.next_action,
+                    severity="blocked",
+                    refs={"status": "paused"},
+                )
                 return
             if result.needs_approval:
                 approval = self.store.create_approval(
@@ -2577,6 +2637,18 @@ class AgentLoopEngine:
                 run = self.store.update_run(run_id, status="waiting_approval", state=state)
                 self.memory.append_checkpoint(run, state, "waiting_approval")
                 await self._event(run_id, "approval_required", result.summary, approval)
+                await self._workstream(
+                    run_id,
+                    phase="approval",
+                    role="operator",
+                    title="Approval Required",
+                    summary=result.summary,
+                    rationale="The selected tool is approval-gated by FlyOrnith policy.",
+                    next_action="Review and approve or reject this action in Focus Chat.",
+                    tool=result.kind,
+                    severity="blocked",
+                    refs={"approval_id": approval.get("id"), "approval_kind": result.kind},
+                )
                 return
 
             state.latest_summary = self._summarize_result(result)
@@ -2596,6 +2668,17 @@ class AgentLoopEngine:
             state.latest_summary = self._summarize_result(result)
             state.next_step = "Write compact checkpoint and handoff."
             state.milestone = "checkpoint"
+            await self._workstream(
+                run_id,
+                phase="verify",
+                role="harness",
+                title="Verification Checked",
+                summary=state.latest_summary,
+                next_action=state.next_step,
+                tool=result.kind,
+                result=result.summary,
+                severity="normal" if result.ok else "watch",
+            )
             await self._save_state(run, state, "verify", state.latest_summary)
             return
 
@@ -2607,6 +2690,15 @@ class AgentLoopEngine:
             run = self.store.update_run(run_id, state=state)
             self.memory.append_checkpoint(run, state, "running")
             await self._event(run_id, "checkpoint", "Wrote compact checkpoint and refreshed handoff.", {"handoff": state.handoff_summary.model_dump()})
+            await self._workstream(
+                run_id,
+                phase="checkpoint",
+                role="harness",
+                title="Checkpoint Written",
+                summary="Wrote a compact Obsidian checkpoint and refreshed the handoff bundle.",
+                next_action=state.next_step,
+                refs={"milestone": state.milestone},
+            )
             return
 
         if state.milestone == "decide":
@@ -2646,6 +2738,17 @@ class AgentLoopEngine:
                     goal_proposal["reason"],
                     {**approval, "goal_evolution": state.goal_evolution.model_dump()},
                 )
+                await self._workstream(
+                    run_id,
+                    phase="approval",
+                    role="operator",
+                    title="Goal Confirmation Needed",
+                    summary="Ornith proposed an updated goal and needs confirmation before continuing.",
+                    rationale=goal_proposal["reason"],
+                    next_action=state.next_step,
+                    severity="blocked",
+                    refs={"approval_id": approval.get("id"), "approval_kind": "goal_update"},
+                )
                 return
 
             completion_audit = self._completion_audit(run, state)
@@ -2659,6 +2762,15 @@ class AgentLoopEngine:
                 run = self.store.update_run(run_id, status="completed", state=state)
                 self.memory.append_final(run, state)
                 await self._event(run_id, "completed", "Run completed.")
+                await self._workstream(
+                    run_id,
+                    phase="completion",
+                    role="harness",
+                    title="Run Completed",
+                    summary=state.latest_summary,
+                    next_action=state.next_step,
+                    refs={"status": "completed"},
+                )
                 return
 
             state.next_step = "Continue with the next safe action."
@@ -2860,6 +2972,17 @@ class AgentLoopEngine:
                     readiness.summary,
                     {"action_readiness": readiness.model_dump(), "selected_action": action},
                 )
+                await self._workstream(
+                    run.id,
+                    phase="act",
+                    role="harness",
+                    title="Readiness Tool Selected",
+                    summary=readiness.summary,
+                    rationale=readiness.recommended_action,
+                    next_action="Execute the selected readiness proof tool.",
+                    tool=self._action_tool(action),
+                    refs={"status": readiness.status, "label": readiness.suggested_label},
+                )
                 return action
             return False
 
@@ -2870,6 +2993,17 @@ class AgentLoopEngine:
             state.handoff_summary = self._make_handoff(run, state)
             self.store.update_run(run.id, state=state)
             await self._event(run.id, "action_readiness_reorient", readiness.summary, {"action_readiness": readiness.model_dump()})
+            await self._workstream(
+                run.id,
+                phase="orient",
+                role="harness",
+                title="Action Readiness Hold",
+                summary=readiness.summary,
+                rationale="The run needs refreshed durable context before another tool action.",
+                next_action=state.next_step,
+                severity="watch",
+                refs={"status": readiness.status},
+            )
             return True
 
         if readiness.status == "needs_replan":
@@ -2880,6 +3014,17 @@ class AgentLoopEngine:
             state.handoff_summary = self._make_handoff(run, state)
             self.store.update_run(run.id, state=state)
             await self._event(run.id, "action_readiness_replan", readiness.summary, {"action_readiness": readiness.model_dump()})
+            await self._workstream(
+                run.id,
+                phase="plan",
+                role="harness",
+                title="Replan Needed",
+                summary=readiness.summary,
+                rationale="Action readiness policy found the current plan is no longer the safest next path.",
+                next_action=state.next_step,
+                severity="watch",
+                refs={"status": readiness.status},
+            )
             return True
 
         if readiness.status == "recover":
@@ -2893,6 +3038,17 @@ class AgentLoopEngine:
             paused = self.store.update_run(run.id, status="paused", state=state)
             self.memory.append_checkpoint(paused, state, "paused")
             await self._event(run.id, "action_readiness_policy", readiness.summary, {"action_readiness": readiness.model_dump()})
+            await self._workstream(
+                run.id,
+                phase="recovery",
+                role="harness",
+                title="Recovery Hold",
+                summary=readiness.summary,
+                rationale="Action readiness policy paused the loop for recovery before continuing.",
+                next_action=state.next_step,
+                severity="blocked",
+                refs={"status": readiness.status},
+            )
             return True
 
         if readiness.status == "waiting_approval":
@@ -2902,6 +3058,17 @@ class AgentLoopEngine:
             waiting = self.store.update_run(run.id, status="waiting_approval", state=state)
             self.memory.append_checkpoint(waiting, state, "waiting_approval")
             await self._event(run.id, "action_readiness_policy", readiness.summary, {"action_readiness": readiness.model_dump()})
+            await self._workstream(
+                run.id,
+                phase="approval",
+                role="operator",
+                title="Waiting For Approval",
+                summary=readiness.summary,
+                rationale="A pending approval must be resolved before FlyOrnith continues.",
+                next_action=state.next_step,
+                severity="blocked",
+                refs={"status": readiness.status},
+            )
             return True
 
         if readiness.status == "blocked":
@@ -2911,6 +3078,17 @@ class AgentLoopEngine:
             paused = self.store.update_run(run.id, status="paused", state=state)
             self.memory.append_checkpoint(paused, state, "paused")
             await self._event(run.id, "action_readiness_policy", readiness.summary, {"action_readiness": readiness.model_dump()})
+            await self._workstream(
+                run.id,
+                phase="blocker",
+                role="harness",
+                title="Action Blocked",
+                summary=readiness.summary,
+                rationale="Action readiness policy found a blocker that needs operator attention.",
+                next_action=state.next_step,
+                severity="blocked",
+                refs={"status": readiness.status},
+            )
             return True
 
         return False
@@ -3759,6 +3937,25 @@ class AgentLoopEngine:
                 "workspace_diff": workspace_diff.model_dump() if workspace_diff else None,
                 "workspace_promotions": [promotion.model_dump() for promotion in workspace_promotions],
                 "objective_readiness_proof_outcome": objective_outcome.model_dump() if objective_outcome else None,
+            },
+        )
+        await self._workstream(
+            run_id,
+            phase="act",
+            role="tool",
+            title="Tool Result" if result.ok else "Tool Failed",
+            summary=result.summary,
+            rationale=self._action_rationale(action or {}),
+            next_action=state.next_step or ("Wait for approval." if result.needs_approval else "Choose the next safe action."),
+            tool=result.kind,
+            result=result.summary,
+            severity="blocked" if result.needs_approval else ("normal" if result.ok else "watch"),
+            refs={
+                **self._action_refs(action or {}),
+                "ok": result.ok,
+                "needs_approval": result.needs_approval,
+                "web_sources": len(result.web_sources),
+                "desktop_snapshots": len(result.desktop_snapshots),
             },
         )
 
@@ -4899,6 +5096,16 @@ class AgentLoopEngine:
         state.handoff_summary = self._make_handoff(run, state)
         self.store.update_run(run.id, state=state)
         await self._event(run.id, kind, message, {"state": state.model_dump()})
+        await self._workstream(
+            run.id,
+            phase=kind if kind in MILESTONES else state.milestone,
+            role="harness",
+            title=self._workstream_title(kind),
+            summary=message,
+            next_action=state.next_step,
+            severity="watch" if kind in {"drift", "health_policy", "health_verify"} else "normal",
+            refs={"milestone": state.milestone, "state_saved": True},
+        )
 
     async def _block(self, run_id: str, reason: str) -> None:
         run = self.store.get_run(run_id)
@@ -4909,6 +5116,16 @@ class AgentLoopEngine:
         run = self.store.update_run(run_id, status="blocked", state=state)
         self.memory.append_checkpoint(run, state, "blocked")
         await self._event(run_id, "blocked", reason)
+        await self._workstream(
+            run_id,
+            phase="blocker",
+            role="harness",
+            title="Run Blocked",
+            summary=reason,
+            next_action=state.next_step,
+            severity="blocked",
+            refs={"status": "blocked"},
+        )
 
     def _make_handoff(self, run: RunRecord, state: RunState) -> HandoffBundle:
         approvals = [
@@ -6474,6 +6691,116 @@ class AgentLoopEngine:
                 "Update the plan with the confirmed fix or blocker.",
             ]
         return common
+
+    async def _workstream(
+        self,
+        run_id: str,
+        *,
+        phase: str,
+        role: str,
+        title: str,
+        summary: str,
+        rationale: str = "",
+        next_action: str = "",
+        tool: str = "",
+        result: str = "",
+        severity: str = "normal",
+        refs: dict[str, Any] | None = None,
+    ) -> None:
+        payload = {
+            "phase": self._public_text(phase, 40),
+            "role": self._public_role(role),
+            "title": self._public_text(title, 120),
+            "summary": self._public_text(summary, 700),
+            "rationale": self._public_text(rationale, 500),
+            "next_action": self._public_text(next_action, 500),
+            "tool": self._public_text(tool, 80),
+            "result": self._public_text(result, 700),
+            "severity": self._public_severity(severity),
+            "refs": self._public_refs(refs or {}),
+        }
+        message = payload["summary"] or payload["title"] or "Workstream update."
+        await self._event(run_id, "workstream", message, payload)
+
+    def _workstream_title(self, kind: str) -> str:
+        titles = {
+            "orient": "Context Loaded",
+            "plan": "Plan Ready",
+            "act": "Action Recorded",
+            "verify": "Verification Recorded",
+            "checkpoint": "Checkpoint Recorded",
+            "decide": "Decision Recorded",
+            "drift": "Drift Check",
+            "health_policy": "Health Policy Hold",
+            "health_verify": "Health Verification",
+        }
+        return titles.get(kind, "Harness Update")
+
+    def _action_tool(self, action: dict[str, Any]) -> str:
+        return str(action.get("tool") or action.get("tool_name") or "unknown_tool")
+
+    def _action_rationale(self, action: dict[str, Any]) -> str:
+        for key in (
+            "thought_summary",
+            "reason",
+            "rationale",
+            "objective_readiness_proof_action",
+            "action_summary",
+        ):
+            value = action.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
+
+    def _action_refs(self, action: dict[str, Any]) -> dict[str, Any]:
+        args = action.get("args") if isinstance(action.get("args"), dict) else {}
+        return {
+            "source": action.get("source") or "",
+            "recommendation_id": action.get("recommendation_id") or "",
+            "post_action_retry_id": action.get("post_action_retry_id") or "",
+            "arg_keys": ", ".join(sorted(str(key) for key in args.keys())[:8]),
+        }
+
+    def _public_text(self, value: Any, limit: int) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, tuple)):
+            try:
+                text = json.dumps(value, ensure_ascii=True, default=str)
+            except TypeError:
+                text = str(value)
+        else:
+            text = str(value)
+        text = " ".join(text.split())
+        lowered = text.lower()
+        prompt_markers = (
+            "compiled context:",
+            "required json shape example:",
+            "system prompt",
+            "raw_excerpt",
+            "\"messages\"",
+            "hidden chain-of-thought",
+        )
+        if any(marker in lowered for marker in prompt_markers):
+            text = "Public summary omitted raw prompt detail."
+        return redact_secrets(text)[:limit]
+
+    def _public_refs(self, refs: dict[str, Any]) -> dict[str, Any]:
+        public: dict[str, Any] = {}
+        for key, value in refs.items():
+            if value in (None, ""):
+                continue
+            key_text = redact_secrets(" ".join(str(key).split()))[:80]
+            if not key_text:
+                continue
+            public[key_text] = self._public_text(value, 240)
+        return public
+
+    def _public_role(self, role: str) -> str:
+        return role if role in {"ornith", "harness", "tool", "operator", "system"} else "system"
+
+    def _public_severity(self, severity: str) -> str:
+        return severity if severity in {"normal", "watch", "blocked"} else "normal"
 
     async def _event(self, run_id: str, kind: str, message: str, data: dict[str, Any] | None = None) -> None:
         event = self.store.append_event(run_id, kind, message, data)

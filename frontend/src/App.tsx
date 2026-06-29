@@ -1230,8 +1230,8 @@ export function App() {
         <div className="brand">
           <Brain size={24} />
           <div>
-            <strong>AgentOrinth</strong>
-            <span>local loop harness</span>
+            <strong>FlyOrnith</strong>
+            <span>public workstream harness</span>
           </div>
         </div>
 
@@ -1443,6 +1443,11 @@ export function App() {
 
           <div className="focus-chat-shell">
             <section className="focus-chat-main" aria-label="Focus chat timeline">
+              <div className="chat-visibility-note">
+                Showing public work summaries, tool choices, results, approvals, and recovery decisions. Hidden
+                chain-of-thought is not shown.
+              </div>
+
               <div className="required-action-stack">
                 <div className="focus-section-heading">
                   <AlertTriangle size={16} />

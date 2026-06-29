@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2200" viewBox="0 0 1600 2200" role="img" aria-labelledby="title desc">
+  <title id="title">FlyOrnith benchmark infographic</title>
+  <desc id="desc">A visual benchmark comparison showing FlyOrnith harness scoring 94 out of 95 and raw command-line Ornith scoring 6 out of 15, with benchmark probes, artifact evidence, and bugs fixed during benchmarking.</desc>
+  <defs>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#10251e"/>
+      <stop offset="0.52" stop-color="#173a32"/>
+      <stop offset="1" stop-color="#263d61"/>
+    </linearGradient>
+    <linearGradient id="agentBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#1f7a4d"/>
+      <stop offset="1" stop-color="#2f9d78"/>
+    </linearGradient>
+    <linearGradient id="rawBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b54747"/>
+      <stop offset="1" stop-color="#d18145"/>
+    </linearGradient>
+    <style>
+      .bg { fill: #f6f8f5; }
+      .paper { fill: #ffffff; stroke: #d7ded8; stroke-width: 1.5; }
+      .soft { fill: #eef4ef; }
+      .dark { fill: #10251e; }
+      .ink { fill: #17221d; }
+      .muted { fill: #56635d; }
+      .faint { fill: #7a8780; }
+      .green { fill: #1f7a4d; }
+      .green2 { fill: #dff3e8; }
+      .blue { fill: #2f6390; }
+      .blue2 { fill: #e4edf8; }
+      .amber { fill: #b7791f; }
+      .amber2 { fill: #fff2d0; }
+      .red { fill: #b54747; }
+      .red2 { fill: #fde7e4; }
+      .line { stroke: #d7ded8; stroke-width: 2; }
+      .lineDark { stroke: #486257; stroke-width: 2; }
+      .title { font: 700 58px Arial, sans-serif; fill: #ffffff; }
+      .subtitle { font: 400 25px Arial, sans-serif; fill: #dbeee6; }
+      .eyebrow { font: 700 15px Arial, sans-serif; fill: #95cdb6; }
+      .tinyLight { font: 400 15px Arial, sans-serif; fill: #c5dbd1; }
+      .h1 { font: 700 44px Arial, sans-serif; fill: #17221d; }
+      .h2 { font: 700 30px Arial, sans-serif; fill: #17221d; }
+      .h3 { font: 700 22px Arial, sans-serif; fill: #17221d; }
+      .body { font: 400 19px Arial, sans-serif; fill: #263630; }
+      .small { font: 400 16px Arial, sans-serif; fill: #56635d; }
+      .tiny { font: 400 13px Arial, sans-serif; fill: #6c7972; }
+      .metric { font: 700 82px Arial, sans-serif; fill: #17221d; }
+      .metricLight { font: 700 82px Arial, sans-serif; fill: #ffffff; }
+      .scoreLabel { font: 700 18px Arial, sans-serif; fill: #ffffff; }
+      .scoreMuted { font: 400 16px Arial, sans-serif; fill: #dcebe4; }
+      .mono { font: 700 16px Consolas, monospace; fill: #183226; }
+      .monoLight { font: 700 16px Consolas, monospace; fill: #ffffff; }
+      .barLabel { font: 700 17px Arial, sans-serif; fill: #17221d; }
+      .barScore { font: 700 16px Arial, sans-serif; fill: #526159; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="2200"/>
+
+  <rect x="0" y="0" width="1600" height="330" fill="url(#hero)"/>
+  <text class="eyebrow" x="82" y="78">AGENTORINTH BENCHMARK SUITE</text>
+  <text class="title" x="80" y="150">Ornith Performs Better Inside The Harness</text>
+  <text class="subtitle" x="82" y="198">Same local model. Same deliverable. FlyOrnith adds tools, memory, safety, verification, and replay.</text>
+  <text class="tinyLight" x="82" y="248">Final run: data/benchmarks/benchmark-suite-20260629-093934 | Live task: run-20260629-082817-b5e61c | 2026-06-29</text>
+  <rect x="1185" y="62" width="295" height="200" rx="18" fill="#ffffff" opacity="0.12"/>
+  <text class="scoreLabel" x="1218" y="108">NORMALIZED LIFT</text>
+  <text class="metricLight" x="1218" y="185">2.47x</text>
+  <text class="scoreMuted" x="1220" y="225">98.9% harness score</text>
+  <text class="scoreMuted" x="1220" y="250">vs 40.0% raw baseline</text>
+
+  <rect class="paper" x="80" y="390" width="690" height="340" rx="18"/>
+  <rect x="110" y="420" width="630" height="112" rx="16" fill="url(#agentBar)"/>
+  <text class="scoreLabel" x="145" y="462">FlyOrnith harness</text>
+  <text class="metricLight" x="145" y="520">94/95</text>
+  <text class="h3" x="118" y="582">Completed the work, not just the answer</text>
+  <text class="body" x="118" y="620">Created the deck, verified structure, mapped acceptance</text>
+  <text class="body" x="118" y="650">criteria, captured tool evidence, and checkpointed context.</text>
+  <rect class="green2" x="118" y="680" width="142" height="34" rx="17"/>
+  <text class="mono" x="145" y="703">6 slides</text>
+  <rect class="green2" x="276" y="680" width="142" height="34" rx="17"/>
+  <text class="mono" x="308" y="703">5/5 AC</text>
+  <rect class="green2" x="434" y="680" width="150" height="34" rx="17"/>
+  <text class="mono" x="464" y="703">38 tools</text>
+  <rect class="green2" x="600" y="680" width="118" height="34" rx="17"/>
+  <text class="mono" x="627" y="703">17 ckpt</text>
+
+  <rect class="paper" x="830" y="390" width="690" height="340" rx="18"/>
+  <rect x="860" y="420" width="630" height="112" rx="16" fill="url(#rawBar)"/>
+  <text class="scoreLabel" x="895" y="462">RAW COMMAND-LINE ORNITH</text>
+  <text class="metricLight" x="895" y="520">6/15</text>
+  <text class="h3" x="868" y="582">Useful text, but no operating system</text>
+  <text class="body" x="868" y="620">Returned a helpful script and limitation statement, but</text>
+  <text class="body" x="868" y="650">created no artifact and left no tool or checkpoint proof.</text>
+  <rect class="red2" x="868" y="680" width="150" height="34" rx="17"/>
+  <text class="mono" x="897" y="703">0 files</text>
+  <rect class="red2" x="1034" y="680" width="170" height="34" rx="17"/>
+  <text class="mono" x="1062" y="703">0 tools</text>
+  <rect class="amber2" x="1220" y="680" width="240" height="34" rx="17"/>
+  <text class="mono" x="1250" y="703">script for human</text>
+
+  <rect class="paper" x="80" y="780" width="1440" height="210" rx="18"/>
+  <text class="h2" x="118" y="832">Benchmark task</text>
+  <text class="body" x="118" y="872">Create AgentOrnith_use_cases.pptx with one overview slide plus five use-case slides.</text>
+  <text class="body" x="118" y="906">Each use-case slide must compare FlyOrnith harness behavior against simple command-line Ornith and include honest tradeoffs.</text>
+  <line class="line" x1="118" y1="938" x2="1482" y2="938"/>
+  <text class="small" x="118" y="968">Pass signal: real PPTX exists, opens as PowerPoint zip, contains 6 slide XML files, satisfies 5 acceptance criteria, and leaves durable replay evidence.</text>
+
+  <rect class="paper" x="80" y="1040" width="690" height="540" rx="18"/>
+  <text class="h2" x="118" y="1092">Probe scorecard</text>
+  <text class="small" x="118" y="1124">The harness was tested across artifact delivery, coding tools, web/browser evidence, safety, workspace isolation, handoff, recovery, dashboard observability, and multi-artifact delivery.</text>
+
+  <text class="barLabel" x="118" y="1188">Artifact creation</text>
+  <rect class="soft" x="370" y="1168" width="310" height="26" rx="13"/>
+  <rect class="green" x="370" y="1168" width="310" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1188">15/15</text>
+
+  <text class="barLabel" x="118" y="1240">Tool-gated bugfix</text>
+  <rect class="soft" x="370" y="1220" width="310" height="26" rx="13"/>
+  <rect class="green" x="370" y="1220" width="310" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1240">12/12</text>
+
+  <text class="barLabel" x="118" y="1292">Web and browser</text>
+  <rect class="soft" x="370" y="1272" width="310" height="26" rx="13"/>
+  <rect class="green" x="370" y="1272" width="310" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1292">12/12</text>
+
+  <text class="barLabel" x="118" y="1344">Safety modes</text>
+  <rect class="soft" x="370" y="1324" width="310" height="26" rx="13"/>
+  <rect class="green" x="370" y="1324" width="310" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1344">12/12</text>
+
+  <text class="barLabel" x="118" y="1396">Workspace isolation</text>
+  <rect class="soft" x="370" y="1376" width="310" height="26" rx="13"/>
+  <rect class="green" x="370" y="1376" width="310" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1396">10/10</text>
+
+  <text class="barLabel" x="118" y="1448">Long-loop handoff</text>
+  <rect class="soft" x="370" y="1428" width="310" height="26" rx="13"/>
+  <rect class="amber" x="370" y="1428" width="279" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1448">9/10</text>
+
+  <text class="barLabel" x="118" y="1500">Recovery, dashboard, artifacts</text>
+  <rect class="soft" x="370" y="1480" width="310" height="26" rx="13"/>
+  <rect class="green" x="370" y="1480" width="310" height="26" rx="13"/>
+  <text class="barScore" x="700" y="1500">24/24</text>
+
+  <rect class="amber2" x="118" y="1530" width="600" height="34" rx="17"/>
+  <text class="mono" x="142" y="1553">Residual: context coverage remains a visible 1-point improvement target.</text>
+
+  <rect class="paper" x="830" y="1040" width="690" height="540" rx="18"/>
+  <text class="h2" x="868" y="1092">What the harness added</text>
+
+  <rect class="blue2" x="868" y="1134" width="284" height="86" rx="14"/>
+  <text class="h3" x="892" y="1168">Tool execution</text>
+  <text class="small" x="892" y="1196">file write, shell, tests, patch</text>
+
+  <rect class="green2" x="1180" y="1134" width="284" height="86" rx="14"/>
+  <text class="h3" x="1204" y="1168">Verification</text>
+  <text class="small" x="1204" y="1196">artifact checks and acceptance</text>
+
+  <rect class="blue2" x="868" y="1248" width="284" height="86" rx="14"/>
+  <text class="h3" x="892" y="1282">Internet evidence</text>
+  <text class="small" x="892" y="1310">web fetch, search, citations</text>
+
+  <rect class="green2" x="1180" y="1248" width="284" height="86" rx="14"/>
+  <text class="h3" x="1204" y="1282">Browser proof</text>
+  <text class="small" x="1204" y="1310">screenshots and UI state</text>
+
+  <rect class="blue2" x="868" y="1362" width="284" height="86" rx="14"/>
+  <text class="h3" x="892" y="1396">Safety gates</text>
+  <text class="small" x="892" y="1424">approval modes, redaction</text>
+
+  <rect class="green2" x="1180" y="1362" width="284" height="86" rx="14"/>
+  <text class="h3" x="1204" y="1396">Long memory</text>
+  <text class="small" x="1204" y="1424">SQLite and Obsidian handoff</text>
+
+  <line class="line" x1="868" y1="1488" x2="1464" y2="1488"/>
+  <text class="body" x="868" y="1528">Raw Ornith gave a script. FlyOrnith turned intent into</text>
+  <text class="body" x="868" y="1558">a verified workspace artifact with durable evidence.</text>
+
+  <rect class="paper" x="80" y="1630" width="1440" height="310" rx="18"/>
+  <text class="h2" x="118" y="1682">Benchmarking also improved the harness</text>
+  <text class="small" x="118" y="1714">Bugs found during the suite were fixed before the README infographic was updated.</text>
+
+  <circle class="green" cx="132" cy="1772" r="12"/>
+  <text class="h3" x="164" y="1778">BENCH-001: destructive PowerShell detection</text>
+  <text class="small" x="164" y="1806">Fixed Remove-Item -Recurse classification so recursive deletes require approval.</text>
+
+  <circle class="green" cx="132" cy="1850" r="12"/>
+  <text class="h3" x="164" y="1856">BENCH-002: stale quality endpoints</text>
+  <text class="small" x="164" y="1884">Resume/checkpoint quality now recompute from current handoff and Obsidian note.</text>
+
+  <circle class="green" cx="810" cy="1772" r="12"/>
+  <text class="h3" x="842" y="1778">BENCH-003: filename goal anchors</text>
+  <text class="small" x="842" y="1806">Goal matching now handles filenames such as AgentOrnith_use_cases.pptx.</text>
+
+  <circle class="green" cx="810" cy="1850" r="12"/>
+  <text class="h3" x="842" y="1856">BENCH-004: stale bytecode false negative</text>
+  <text class="small" x="842" y="1884">Benchmark fixture clears __pycache__ before retesting patched Python files.</text>
+
+  <rect class="dark" x="80" y="1990" width="1440" height="130" rx="18"/>
+  <text class="scoreLabel" x="118" y="2038">BOTTOM LINE</text>
+  <text class="subtitle" x="118" y="2082">FlyOrnith does not make Ornith magically omnipotent. It gives Ornith a disciplined workbench:</text>
+  <text class="subtitle" x="118" y="2116">bounded tools, supervised risk, persistent memory, and proof that the work actually happened.</text>
+
+  <text class="tiny" x="80" y="2170">Full report: docs/benchmarks/flyornith-benchmark-report.md | Bug log: docs/benchmarks/flyornith-benchmark-bugfix-log.md</text>
+</svg>
+

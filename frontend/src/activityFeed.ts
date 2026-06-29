@@ -7,7 +7,7 @@ import type {
   RunRecord,
 } from "./api";
 
-export type ActivityFeedRole = "user" | "ornith" | "tool" | "operator" | "system";
+export type ActivityFeedRole = "user" | "ornith" | "harness" | "tool" | "operator" | "system";
 
 export type ActivityFeedKind = "timeline" | "required_action" | "artifact";
 
@@ -245,12 +245,20 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
     });
   });
 
-  selected.state.model_interactions.slice(-14).forEach((interaction) => {
+  const hasWorkstream = input.events.some((event) => event.kind === "workstream");
+  const modelInteractionWindow = hasWorkstream ? selected.state.model_interactions.slice(-4) : selected.state.model_interactions.slice(-14);
+  const toolCallWindow = hasWorkstream ? selected.state.tool_calls.slice(-6) : selected.state.tool_calls.slice(-18);
+  const commandWindow = hasWorkstream ? selected.state.commands_run.slice(-4) : selected.state.commands_run.slice(-10);
+  const eventWindow = hasWorkstream
+    ? input.events.filter((event) => event.kind === "workstream").slice(-48)
+    : input.events.slice(-24);
+
+  modelInteractionWindow.forEach((interaction) => {
     timeline.push({
       id: `model-${interaction.id}`,
       role: "ornith",
       kind: "timeline",
-      title: `${interaction.kind}${interaction.fallback_used ? " fallback" : ""}`,
+      title: `${hasWorkstream ? "Model detail: " : ""}${interaction.kind}${interaction.fallback_used ? " fallback" : ""}`,
       body:
         interaction.summary ||
         interaction.error ||
@@ -261,38 +269,31 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
     });
   });
 
-  selected.state.tool_calls.slice(-18).forEach((toolCall) => {
+  toolCallWindow.forEach((toolCall) => {
     timeline.push({
       id: `tool-${toolCall.id}`,
       role: "tool",
       kind: "timeline",
-      title: `${toolCall.name}${toolCall.ok ? "" : " failed"}`,
+      title: `${hasWorkstream ? "Tool detail: " : ""}${toolCall.name}${toolCall.ok ? "" : " failed"}`,
       body: toolCall.summary || compactJson(toolCall.args),
       timestamp: toolCall.created_at,
       severity: toolCall.ok ? "normal" : "watch",
     });
   });
 
-  selected.state.commands_run.slice(-10).forEach((command, index) => {
+  commandWindow.forEach((command, index) => {
     timeline.push({
       id: `command-${index}-${hashText(command)}`,
       role: "tool",
       kind: "timeline",
-      title: "command",
+      title: hasWorkstream ? "Command detail" : "command",
       body: command,
       timestamp: selected.updated_at,
     });
   });
 
-  input.events.slice(-24).forEach((event) => {
-    timeline.push({
-      id: `event-${event.id}`,
-      role: eventRole(event.kind),
-      kind: "timeline",
-      title: event.kind,
-      body: event.message,
-      timestamp: event.timestamp,
-    });
+  eventWindow.forEach((event) => {
+    timeline.push(event.kind === "workstream" ? workstreamItem(event) : legacyEventItem(event));
   });
 
   input.artifacts.slice(0, 18).forEach((artifact) => {
@@ -314,6 +315,43 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
     ...required.sort(requiredActionSort),
     ...timeline.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
   ]);
+}
+
+function workstreamItem(event: EventRecord): ActivityFeedItem {
+  const data = asRecord(event.data);
+  const summary = dataString(data, "summary") || event.message;
+  const rationale = dataString(data, "rationale");
+  const result = dataString(data, "result");
+  const nextAction = dataString(data, "next_action");
+  const body = [
+    summary,
+    rationale ? `Why: ${rationale}` : "",
+    result && result !== summary ? `Result: ${result}` : "",
+    nextAction ? `Next: ${nextAction}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return {
+    id: `workstream-${event.id}`,
+    role: workstreamRole(dataString(data, "role")),
+    kind: "timeline",
+    title: dataString(data, "title") || "Workstream Update",
+    body,
+    timestamp: event.timestamp,
+    severity: workstreamSeverity(dataString(data, "severity")),
+    meta: workstreamMeta(data),
+  };
+}
+
+function legacyEventItem(event: EventRecord): ActivityFeedItem {
+  return {
+    id: `event-${event.id}`,
+    role: eventRole(event.kind),
+    kind: "timeline",
+    title: event.kind,
+    body: event.message,
+    timestamp: event.timestamp,
+  };
 }
 
 function approvalTitle(approval: ApprovalReviewRecord): string {
@@ -373,11 +411,43 @@ function requiredActionSort(a: ActivityFeedItem, b: ActivityFeedItem): number {
 
 function eventRole(kind: string): ActivityFeedRole {
   const lowered = kind.toLowerCase();
+  if (lowered.includes("workstream")) return "harness";
   if (lowered.includes("tool") || lowered.includes("command")) return "tool";
   if (lowered.includes("approval") || lowered.includes("operator") || lowered.includes("block")) return "operator";
   if (lowered.includes("user") || lowered.includes("steer")) return "user";
   if (lowered.includes("model") || lowered.includes("plan") || lowered.includes("goal")) return "ornith";
   return "system";
+}
+
+function workstreamRole(role: string): ActivityFeedRole {
+  if (role === "ornith" || role === "harness" || role === "tool" || role === "operator" || role === "system") {
+    return role;
+  }
+  return "system";
+}
+
+function workstreamSeverity(severity: string): ActivityFeedItem["severity"] {
+  if (severity === "blocked" || severity === "watch" || severity === "normal") return severity;
+  return "normal";
+}
+
+function workstreamMeta(data: Record<string, unknown>): string[] {
+  const refs = asRecord(data.refs);
+  const refPairs = Object.entries(refs)
+    .slice(0, 4)
+    .map(([key, value]) => `${key}: ${String(value)}`);
+  return [dataString(data, "phase"), dataString(data, "tool"), ...refPairs].filter(Boolean);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function dataString(data: Record<string, unknown>, key: string): string {
+  const value = data[key];
+  if (typeof value === "string") return value.trim();
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
 }
 
 function workspaceSummary(selected: RunRecord): string {

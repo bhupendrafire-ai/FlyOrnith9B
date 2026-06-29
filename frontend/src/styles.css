@@ -1377,6 +1377,22 @@ select {
   color: #9fb9ff;
 }
 
+.chat-message.harness {
+  border-left: 3px solid #4a7658;
+}
+
+.chat-message.harness span {
+  color: #7ed69a;
+}
+
+.chat-message.watch {
+  border-left: 3px solid #ffd68d;
+}
+
+.chat-message.blocked {
+  border-left: 3px solid #ff9b8d;
+}
+
 .chat-message p,
 .artifact-item p {
   color: #d4ddd1;
@@ -1701,6 +1717,15 @@ a {
   flex-direction: column;
 }
 
+.chat-visibility-note {
+  background: #111510;
+  border-bottom: 1px solid #30372f;
+  color: #aebbae;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  padding: 0.55rem 0.7rem;
+}
+
 .focus-artifact-rail {
   display: flex;
   flex-direction: column;
@@ -1802,7 +1827,7 @@ a {
 }
 
 .chat-message.blocked {
-  border-left-color: #ff9b8d;
+  border-left: 3px solid #ff9b8d;
 }
 
 .inline-actions {

@@ -83,6 +83,81 @@ def make_engine(
     )
 
 
+def test_workstream_event_is_public_and_sanitized(tmp_path: Path):
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run("Explain public workstream", "Workstream", str(tmp_path), [])
+
+    asyncio.run(
+        engine._workstream(
+            run.id,
+            phase="act",
+            role="harness",
+            title="Tool Selected",
+            summary="Compiled context: this raw prompt detail should not be public.",
+            rationale="Use the smallest verifiable file read.",
+            next_action="Read the workspace listing.",
+            tool="file_read",
+            refs={"raw_excerpt": "system prompt with hidden chain-of-thought", "approval_id": 7},
+        )
+    )
+
+    event = engine.store.list_events(run.id)[-1]
+    assert event["kind"] == "workstream"
+    assert event["message"] == "Public summary omitted raw prompt detail."
+    assert event["data"] == {
+        "phase": "act",
+        "role": "harness",
+        "title": "Tool Selected",
+        "summary": "Public summary omitted raw prompt detail.",
+        "rationale": "Use the smallest verifiable file read.",
+        "next_action": "Read the workspace listing.",
+        "tool": "file_read",
+        "result": "",
+        "severity": "normal",
+        "refs": {
+            "raw_excerpt": "Public summary omitted raw prompt detail.",
+            "approval_id": "7",
+        },
+    }
+
+
+def test_save_state_emits_workstream_handoff_summary(tmp_path: Path):
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run("Inspect project", "Inspect", str(tmp_path), [])
+    state = run.state
+    state.milestone = "plan"
+    state.next_step = "Create a compact milestone plan."
+
+    asyncio.run(engine._save_state(run, state, "orient", "Reloaded compact context."))
+
+    events = [event for event in engine.store.list_events(run.id) if event["kind"] == "workstream"]
+    assert events[-1]["data"]["phase"] == "orient"
+    assert events[-1]["data"]["title"] == "Context Loaded"
+    assert events[-1]["data"]["summary"] == "Reloaded compact context."
+    assert events[-1]["data"]["next_action"] == "Create a compact milestone plan."
+
+
+def test_tool_result_emits_public_workstream_result(tmp_path: Path):
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run("Inspect project", "Tool result", str(tmp_path), [])
+    result = ToolResult(True, "file_read", "Read workspace listing.", {"path": "."})
+
+    asyncio.run(
+        engine._record_tool_result(
+            run.id,
+            result,
+            action={"tool": "file_read", "args": {"path": "."}, "thought_summary": "Inspect workspace first."},
+        )
+    )
+
+    events = [event for event in engine.store.list_events(run.id) if event["kind"] == "workstream"]
+    assert events[-1]["data"]["title"] == "Tool Result"
+    assert events[-1]["data"]["role"] == "tool"
+    assert events[-1]["data"]["tool"] == "file_read"
+    assert events[-1]["data"]["rationale"] == "Inspect workspace first."
+    assert events[-1]["data"]["refs"]["arg_keys"] == "path"
+
+
 OBJECTIVE_READINESS_ITEM_IDS = [
     "isolated_workspaces",
     "patch_first_editing",
@@ -2692,7 +2767,10 @@ def test_run_health_policy_routes_open_evidence_to_verification(tmp_path: Path) 
         assert updated.status == "queued"
         assert updated.state.milestone == "act"
         assert updated.state.run_health.recommended_action == "verify"
-        assert engine.store.list_events(created.id)[-1]["kind"] == "health_verify"
+        latest_non_workstream = [
+            event for event in engine.store.list_events(created.id) if event["kind"] != "workstream"
+        ][-1]
+        assert latest_non_workstream["kind"] == "health_verify"
 
     asyncio.run(run())
 
