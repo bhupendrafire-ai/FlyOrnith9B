@@ -35,6 +35,22 @@ EVIDENCE_LABEL_WORDS: dict[str, set[str]] = {
 }
 
 EVIDENCE_LABEL_ORDER = ("verification", "checkpoint", "browser", "edit", "web")
+LOCAL_WEB_APP_WORDS = {
+    "app",
+    "browser",
+    "dashboard",
+    "load",
+    "loads",
+    "local",
+    "locally",
+    "localhost",
+    "page",
+    "run",
+    "runs",
+    "start",
+    "starts",
+}
+WEB_SOURCE_WORDS = EVIDENCE_LABEL_WORDS["web"] - {"web"}
 
 
 def text_words(text: str) -> list[str]:
@@ -47,7 +63,17 @@ def infer_required_labels(criterion: str) -> list[str]:
         label
         for label in EVIDENCE_LABEL_ORDER
         if words.intersection(EVIDENCE_LABEL_WORDS[label])
+        and not _web_label_is_only_local_app_word(label, words)
     ]
+
+
+def _web_label_is_only_local_app_word(label: str, words: set[str]) -> bool:
+    return (
+        label == "web"
+        and "web" in words
+        and not words.intersection(WEB_SOURCE_WORDS)
+        and bool(words.intersection(LOCAL_WEB_APP_WORDS))
+    )
 
 
 def compact_label_progress(required: list[str], matched: list[str]) -> str:

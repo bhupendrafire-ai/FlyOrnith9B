@@ -6,7 +6,7 @@ from pathlib import Path
 from .schemas import RunRecord, RunState
 
 
-PPTX_WORDS = {"ppt", "pptx", "powerpoint", "deck", "slide", "slides", "presentation"}
+PPTX_STRONG_WORDS = {"ppt", "pptx", "powerpoint", "deck", "presentation"}
 HTML_WORDS = {"html", "webpage", "website", "landing page", "single page"}
 
 
@@ -22,11 +22,16 @@ def artifact_verification_command(run: RunRecord, state: RunState, criterion: st
 
 def expected_artifact_suffix(run: RunRecord, state: RunState, criterion: str = "") -> str:
     text = " ".join([run.goal, state.goal, criterion, " ".join(state.acceptance_criteria)]).lower()
-    if any(word in text for word in PPTX_WORDS):
+    if _has_pptx_intent(text):
         return ".pptx"
     if any(word in text for word in HTML_WORDS):
         return ".html"
     return ""
+
+
+def _has_pptx_intent(text: str) -> bool:
+    words = set(re.findall(r"[a-z0-9_-]{2,}", text))
+    return bool(words.intersection(PPTX_STRONG_WORDS))
 
 
 def expected_artifact_exists(run: RunRecord, state: RunState, criterion: str = "") -> bool:

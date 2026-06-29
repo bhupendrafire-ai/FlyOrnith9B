@@ -4,7 +4,7 @@ from pathlib import Path
 
 from app.action_context import build_action_context_pack
 from app.acceptance import infer_required_labels
-from app.artifact_verification import artifact_verification_command
+from app.artifact_verification import artifact_verification_command, expected_artifact_suffix
 from app.context_compiler import ContextCompiler
 from app.memory import MemoryContext
 from app.persistence import RunStore
@@ -120,6 +120,24 @@ def test_artifact_verification_checks_pptx_content_when_criterion_requires_it(tm
 def test_artifact_acceptance_words_require_verification() -> None:
     assert infer_required_labels("The deck contains exactly six slides.") == ["verification"]
     assert infer_required_labels("The deck includes honest tradeoffs.") == ["verification"]
+
+
+def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
+    assert infer_required_labels("Web app runs locally in the browser with one command and loads without errors.") == ["browser"]
+    assert infer_required_labels("Latest web source and dashboard screenshot") == ["browser", "web"]
+
+
+def test_runner_slide_controls_do_not_trigger_pptx_artifact_detection(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run(
+        "Build an original Subway Surfers-style endless runner web app called Metro Dash.",
+        "Metro Dash",
+        str(tmp_path),
+        ["Player can move left/right between 3 lanes, jump, and slide using keyboard controls."],
+    )
+
+    assert expected_artifact_suffix(run, run.state, run.state.acceptance_criteria[0]) == ""
+    assert artifact_verification_command(run, run.state, run.state.acceptance_criteria[0]) == ""
 
 
 def test_context_compiler_uses_compact_sections(tmp_path: Path) -> None:
