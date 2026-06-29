@@ -19,7 +19,8 @@ export type ActivityFeedActionType =
   | "artifact"
   | "handoff"
   | "blocker"
-  | "readiness";
+  | "readiness"
+  | "resume";
 
 export type WorkbenchArtifact = {
   id: string;
@@ -217,17 +218,62 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
     });
   }
 
-  if (input.actionReadiness && !input.actionReadiness.ready_to_act) {
+  const actionReadiness = input.actionReadiness;
+  const hasBlockingRequiredAction = required.some((item) => item.severity === "blocked");
+  const readinessNeedsHuman = Boolean(
+    actionReadiness &&
+      !actionReadiness.ready_to_act &&
+      ["blocked", "recover", "waiting_approval"].includes(actionReadiness.status),
+  );
+
+  if (actionReadiness && readinessNeedsHuman) {
     required.push({
       id: "required-action-readiness",
       role: "operator",
       kind: "required_action",
       title: "Action Readiness",
-      body: input.actionReadiness.recommended_action || input.actionReadiness.summary || "Resolve readiness before acting.",
-      timestamp: input.actionReadiness.generated_at,
-      severity: input.actionReadiness.status === "blocked" ? "blocked" : "watch",
+      body: actionReadiness.recommended_action || actionReadiness.summary || "Resolve readiness before acting.",
+      timestamp: actionReadiness.generated_at,
+      severity: actionReadiness.status === "blocked" ? "blocked" : "watch",
       actionType: "readiness",
-      meta: [input.actionReadiness.status, input.actionReadiness.suggested_label].filter(Boolean),
+      meta: [actionReadiness.status, actionReadiness.suggested_label].filter(Boolean),
+    });
+  }
+
+  if (
+    selected.status === "paused" &&
+    !hasBlockingRequiredAction &&
+    !input.recoveryDecisions?.active_recovery &&
+    !input.approvals.some((approval) => approval.status === "pending") &&
+    !selected.state.proposed_goal
+  ) {
+    required.push({
+      id: "required-resume-paused-run",
+      role: "operator",
+      kind: "required_action",
+      title: "Run Paused",
+      body: pausedRunBody(actionReadiness?.status, selected.state.milestone, selected.state.next_step),
+      timestamp: nowish,
+      severity: "watch",
+      actionType: "resume",
+      meta: ["no approval needed", selected.state.milestone].filter(Boolean),
+    });
+  }
+
+  if (actionReadiness && !actionReadiness.ready_to_act && !readinessNeedsHuman) {
+    timeline.push({
+      id: "action-readiness-info",
+      role: "harness",
+      kind: "timeline",
+      title: "Harness Readiness",
+      body: actionReadinessInfoBody(
+        actionReadiness.status,
+        actionReadiness.summary,
+        actionReadiness.recommended_action,
+      ),
+      timestamp: actionReadiness.generated_at,
+      severity: "normal",
+      meta: [actionReadiness.status, actionReadiness.milestone].filter(Boolean),
     });
   }
 
@@ -354,6 +400,37 @@ function legacyEventItem(event: EventRecord): ActivityFeedItem {
   };
 }
 
+function pausedRunBody(readinessStatus: string | undefined, milestone: string, nextStep: string): string {
+  if (readinessStatus === "needs_replan" || readinessStatus === "reorient") {
+    return [
+      "No approval is needed. FlyOrnith is paused before the next loop step.",
+      `Current milestone: ${milestone}.`,
+      nextStep ? `Next: ${nextStep}` : "Click Resume to continue from the checkpoint.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return [
+    "No approval is needed. The run is paused.",
+    nextStep ? `Next: ${nextStep}` : "Click Resume to continue.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function actionReadinessInfoBody(status: string, summary: string, recommendedAction: string): string {
+  if (status === "needs_replan" || status === "reorient") {
+    return [
+      "Internal loop state, not a user approval.",
+      summary || "FlyOrnith needs to advance through orient/plan before selecting a tool.",
+      recommendedAction ? `Next: ${recommendedAction}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return [summary, recommendedAction ? `Next: ${recommendedAction}` : ""].filter(Boolean).join("\n");
+}
+
 function approvalTitle(approval: ApprovalReviewRecord): string {
   if (approval.action_kind === "workspace_promote") return "Approve Project Promotion";
   if (approval.action_kind.startsWith("desktop_")) return "Approve Desktop Action";
@@ -397,9 +474,10 @@ function requiredActionSort(a: ActivityFeedItem, b: ActivityFeedItem): number {
     recovery: 2,
     blocker: 3,
     readiness: 4,
-    handoff: 5,
-    queue: 6,
-    artifact: 7,
+    resume: 5,
+    handoff: 6,
+    queue: 7,
+    artifact: 8,
   };
   const severityRank = { blocked: 0, watch: 1, normal: 2 };
   return (

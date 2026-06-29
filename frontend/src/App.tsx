@@ -468,6 +468,10 @@ export function App() {
     [activeConversation],
   );
   const firstRequiredAction = requiredActionItems[0];
+  const requiredActionLabel =
+    requiredActionItems.length > 0 && requiredActionItems.every((item) => item.actionType === "resume")
+      ? "Paused"
+      : "Needs You";
   const selectedProjectPath =
     selected?.state.workspace_isolation.workspace_path ||
     selected?.workspace_path ||
@@ -1163,6 +1167,15 @@ export function App() {
       );
     }
 
+    if (item.actionType === "resume") {
+      return (
+        <button className="primary" type="button" onClick={() => control("resume")} disabled={busy || !selectedId || !canResumeRun(selected)}>
+          <Play size={15} />
+          Resume Run
+        </button>
+      );
+    }
+
     const queueItem = findQueueItem(item);
     if (queueItem) {
       if (queueItem.ui_target === "approval" && queueItem.approval_id) {
@@ -1193,7 +1206,7 @@ export function App() {
       }
     }
 
-    if (item.actionType === "blocker" || item.actionType === "readiness") {
+    if (item.actionType === "blocker") {
       return (
         <>
           <button type="button" onClick={() => setActiveView("activity")}>
@@ -1203,6 +1216,14 @@ export function App() {
             Replan
           </button>
         </>
+      );
+    }
+
+    if (item.actionType === "readiness") {
+      return (
+        <button type="button" onClick={() => setActiveView("activity")}>
+          View Details
+        </button>
       );
     }
 
@@ -1411,7 +1432,7 @@ export function App() {
         <div className="needs-you-strip">
           <button type="button" onClick={() => setActiveView("focus")} className={requiredActionItems.length ? "active" : ""}>
             <AlertTriangle size={15} />
-            Needs You
+            {requiredActionLabel}
             <strong>{requiredActionItems.length}</strong>
           </button>
           <span>
