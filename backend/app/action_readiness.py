@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from .acceptance import infer_required_labels
@@ -224,6 +225,26 @@ def build_action_readiness(
                 "",
                 issues,
             )
+        if _browser_proof_requires_project_first(run, state, recommendation):
+            issues.append(
+                ActionReadinessIssue(
+                    id="browser_proof_before_project",
+                    severity="info",
+                    summary="Browser proof should wait until the requested app exists or has been changed.",
+                    evidence=[recommendation.criterion, f"workspace={run.workspace_path}"],
+                )
+            )
+            return _report(
+                run,
+                resume_decisions,
+                task,
+                "ready",
+                True,
+                "Create or modify the requested app before capturing browser proof.",
+                "",
+                "",
+                issues,
+            )
         if not recommendation.available or recommendation.tool_kind == "ask_user":
             issues.append(
                 ActionReadinessIssue(
@@ -307,6 +328,45 @@ def _has_edit_evidence(state: Any) -> bool:
         return True
     edit_tools = {"file_write", "patch_apply", "patch_propose", "workspace_promote"}
     return any(call.ok and call.name in edit_tools for call in state.tool_calls)
+
+
+def _browser_proof_requires_project_first(
+    run: RunRecord,
+    state: Any,
+    recommendation: AcceptanceEvidenceRecommendation,
+) -> bool:
+    if recommendation.label != "browser":
+        return False
+    if recommendation.id.startswith("readiness-source-ref-"):
+        return False
+    if _criterion_allows_dashboard_proof(recommendation.criterion):
+        return False
+    if _has_edit_evidence(state) or expected_artifact_exists(run, state, recommendation.criterion):
+        return False
+    return not _has_workspace_project_files(run.workspace_path)
+
+
+def _criterion_allows_dashboard_proof(criterion: str) -> bool:
+    return "dashboard" in criterion.lower()
+
+
+def _has_workspace_project_files(workspace_path: str) -> bool:
+    if not workspace_path:
+        return False
+    root = Path(workspace_path)
+    if not root.exists():
+        return False
+    ignored_parts = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
+    ignored_suffixes = {".db", ".sqlite", ".sqlite3", ".pyc", ".log"}
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if ignored_parts.intersection(path.parts):
+            continue
+        if path.suffix.lower() in ignored_suffixes:
+            continue
+        return True
+    return False
 
 
 def _readiness_source_ref_refresh_required(run: RunRecord) -> bool:
@@ -426,14 +486,19 @@ def _recommendation_for_label(
         )
     if label == "browser":
         if state.browser_enabled:
+            command_hint = (
+                "url=http://127.0.0.1:5173"
+                if criterion_id == "readiness-source-ref" or _criterion_allows_dashboard_proof(criterion)
+                else ""
+            )
             return AcceptanceEvidenceRecommendation(
                 id=f"{criterion_id}-browser",
                 criterion_id=criterion_id,
                 criterion=criterion,
                 label=label,
                 tool_kind="browser_screenshot",
-                action="Capture a browser screenshot of the relevant local page or dashboard.",
-                command_hint="url=http://127.0.0.1:5173",
+                action="Capture a browser screenshot of the relevant local app page.",
+                command_hint=command_hint,
                 reason="Criterion still needs visible browser proof.",
             )
         if state.desktop_enabled:

@@ -3201,6 +3201,53 @@ def test_action_readiness_prioritizes_missing_browser_source_evidence(tmp_path: 
     assert created.state.source_evidence.missing_labels == ["browser"]
 
 
+def test_action_readiness_defers_browser_proof_for_empty_app_workspace(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    workspace = tmp_path / "empty-app"
+    workspace.mkdir()
+    created = engine.store.create_run(
+        "Build a browser web app",
+        "Empty app proof gate",
+        str(workspace),
+        ["App runs locally in the browser with one command and loads without errors."],
+    )
+    created.state.milestone = "act"
+    engine._ensure_acceptance_evidence(created.state)
+    created = engine.store.update_run(created.id, status="queued", state=created.state)
+
+    report = engine._build_action_readiness(created, created.state)
+
+    assert report.status == "ready"
+    assert report.ready_to_act
+    assert report.suggested_tool == ""
+    assert report.issues[0].id == "browser_proof_before_project"
+    assert "before capturing browser proof" in report.recommended_action
+
+
+def test_dashboard_screenshot_does_not_verify_non_dashboard_app(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    workspace = tmp_path / "empty-game"
+    workspace.mkdir()
+    run = engine.store.create_run(
+        "Build a browser web app",
+        "Dashboard screenshot mismatch",
+        str(workspace),
+        ["App runs locally in the browser with one command and loads without errors."],
+    )
+    engine._ensure_acceptance_evidence(run.state)
+    result = ToolResult(
+        True,
+        "browser_screenshot",
+        "Captured browser screenshot for http://127.0.0.1:5173.",
+        {"url": "http://127.0.0.1:5173", "path": "browser.png"},
+    )
+
+    engine._update_acceptance_evidence(run.state, result)
+
+    assert run.state.acceptance_evidence[0].status == "open"
+    assert run.state.acceptance_evidence[0].matched_labels == []
+
+
 
 def test_choose_action_uses_readiness_source_ref_preview_recommendation_before_model(tmp_path: Path) -> None:
     async def run() -> None:

@@ -3115,7 +3115,7 @@ class AgentLoopEngine:
                 "thought_summary": thought,
             }
         elif tool == "browser_screenshot":
-            action = {"tool": "browser_screenshot", "args": {"url": "http://127.0.0.1:5173"}, "thought_summary": thought}
+            return None
         elif tool == "desktop_screenshot":
             action = {"tool": "desktop_screenshot", "args": {}, "thought_summary": thought}
         elif tool == "obsidian_checkpoint":
@@ -3729,9 +3729,12 @@ class AgentLoopEngine:
                 "thought_summary": thought,
             }
         if item.tool_kind == "browser_screenshot":
+            url = self._url_from_hint(item.command_hint)
+            if not url:
+                return None
             return {
                 "tool": "browser_screenshot",
-                "args": {"url": self._url_from_hint(item.command_hint) or "http://127.0.0.1:5173"},
+                "args": {"url": url},
                 "thought_summary": thought,
             }
         if item.tool_kind == "desktop_screenshot":
@@ -4346,7 +4349,11 @@ class AgentLoopEngine:
         result_labels = self._result_evidence_labels(result.kind)
         for item in state.acceptance_evidence:
             required_labels = item.required_labels
-            supported_labels = [label for label in required_labels if label in result_labels]
+            supported_labels = [
+                label
+                for label in required_labels
+                if label in result_labels and self._result_label_is_relevant_to_item(state, item, label, result)
+            ]
             fallback_supported = not required_labels and self._result_supports_criterion(
                 item.criterion,
                 result,
@@ -4364,6 +4371,49 @@ class AgentLoopEngine:
                 can_fail=result.kind in set(self.config.completion_verification_tools),
             )
         self._refresh_acceptance_recommendations(state)
+
+    def _result_label_is_relevant_to_item(
+        self,
+        state: RunState,
+        item: AcceptanceCriterionEvidence,
+        label: str,
+        result: ToolResult,
+    ) -> bool:
+        if label != "browser" or result.kind != "browser_screenshot":
+            return True
+        criterion = item.criterion.lower()
+        url = str(result.data.get("url") or "").lower() if isinstance(result.data, dict) else ""
+        if self._is_dashboard_browser_url(url) and "dashboard" not in criterion:
+            return False
+        if "dashboard" in criterion:
+            return True
+        return self._has_workspace_material_for_browser_proof(state)
+
+    def _is_dashboard_browser_url(self, url: str) -> bool:
+        return "127.0.0.1:5173" in url or "localhost:5173" in url
+
+    def _has_workspace_material_for_browser_proof(self, state: RunState) -> bool:
+        if state.files_touched or state.patch_proposals or state.patch_applications:
+            return True
+        if getattr(state.workspace_diff, "total_files", 0):
+            return True
+        edit_tools = {"file_write", "patch_apply", "patch_propose", "workspace_promote"}
+        if any(call.ok and call.name in edit_tools for call in state.tool_calls):
+            return True
+        workspace = Path(state.workspace_isolation.workspace_path or "")
+        if not workspace.exists():
+            return False
+        ignored_parts = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
+        ignored_suffixes = {".db", ".sqlite", ".sqlite3", ".pyc", ".log"}
+        for path in workspace.rglob("*"):
+            if not path.is_file():
+                continue
+            if ignored_parts.intersection(path.parts):
+                continue
+            if path.suffix.lower() in ignored_suffixes:
+                continue
+            return True
+        return False
 
     def _record_acceptance_checkpoint(self, state: RunState) -> None:
         if not state.acceptance_criteria:
@@ -4551,14 +4601,15 @@ class AgentLoopEngine:
             )
         if label == "browser":
             if state.browser_enabled:
+                command_hint = "url=http://127.0.0.1:5173" if self._criterion_allows_dashboard_proof(item.criterion) else ""
                 return AcceptanceEvidenceRecommendation(
                     id=f"{item.id}-browser",
                     criterion_id=item.id,
                     criterion=item.criterion,
                     label=label,
                     tool_kind="browser_screenshot",
-                    action="Capture a browser screenshot of the relevant local page or dashboard.",
-                    command_hint="url=http://127.0.0.1:5173",
+                    action="Capture a browser screenshot of the relevant local app page.",
+                    command_hint=command_hint,
                     reason="Criterion still needs visible browser proof.",
                 )
             if state.desktop_enabled:
@@ -4623,6 +4674,9 @@ class AgentLoopEngine:
             reason="No built-in tool recommendation exists for this label.",
             available=False,
         )
+
+    def _criterion_allows_dashboard_proof(self, criterion: str) -> bool:
+        return "dashboard" in criterion.lower()
 
     async def run_operator_dispatch_restart_smoke(self) -> OperatorDispatchRestartSmokeReport:
         run: RunRecord | None = None
