@@ -128,6 +128,10 @@ def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
     assert infer_required_labels("Project source files are implemented in the workspace and index.html exists.") == ["verification", "edit"]
     assert infer_required_labels("Game includes obstacles, collectible coins, score, distance, and speed scaling.") == ["verification"]
     assert infer_required_labels("Visual design is clean, arcade-like, responsive, and uses original themed assets.") == ["verification", "browser"]
+    assert infer_required_labels("The user can play notes from the computer keyboard with low-latency audio feedback.") == ["verification"]
+    assert infer_required_labels("The layout is easy to understand and works on desktop-sized screens.") == ["browser"]
+    assert infer_required_labels("The synth includes waveform, volume, attack/release, and filter controls.") == ["verification", "browser"]
+    assert infer_required_labels("Bonus features include octave shifting, sustain, recording/playback, presets, chord mode, arpeggiator, and visualizer.") == ["verification", "browser"]
 
 
 def test_runner_slide_controls_trigger_webapp_not_pptx_artifact_detection(tmp_path: Path) -> None:
@@ -145,6 +149,28 @@ def test_runner_slide_controls_trigger_webapp_not_pptx_artifact_detection(tmp_pa
     assert action is not None
     assert action["tool"] == "file_write"
     assert action["args"]["path"] == "_flyornith_create_webapp.py"
+
+
+def test_synth_goal_uses_synth_webapp_scaffold(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run(
+        "Build an original browser-based synth web app called KeySynth Studio.",
+        "KeySynth Studio",
+        str(tmp_path),
+        [
+            "The user can play notes from the computer keyboard with low-latency audio feedback.",
+            "The synth includes waveform, volume, attack/release, and filter controls.",
+        ],
+    )
+
+    action = artifact_creation_action(run, run.state)
+
+    assert action is not None
+    content = action["args"]["content"]
+    assert "KeySynth Studio" in content
+    assert "synth.js" in content
+    assert "AudioContext" in content
+    assert "Metro Dash" not in content
 
 
 def test_context_compiler_uses_compact_sections(tmp_path: Path) -> None:
