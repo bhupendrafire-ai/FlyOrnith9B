@@ -3431,6 +3431,91 @@ class AgentLoopEngine:
         normalize = lambda value: " ".join(value.lower().replace("objective readiness:", "").split())
         return normalize(first) == normalize(second)
 
+    async def _draft_missing_html_artifact_action(self, run: RunRecord, memory_text: str) -> dict[str, Any] | None:
+        state = run.state
+        if expected_artifact_suffix(run, state) != ".html":
+            return None
+        current_task = self._current_task(state)
+        current_task_text = current_task.title if current_task else state.next_step
+        criteria_text = "\n".join(f"- {item}" for item in state.acceptance_criteria[:8]) or "- Create the requested HTML deliverable."
+        plan_text = "\n".join(f"{index}. {step}" for index, step in enumerate(state.current_plan[: self.model_profile.plan_max_steps], start=1))
+        prompt = (
+            "Author the missing browser deliverable for FlyOrnith. "
+            "Return exactly one JSON object for a file_write tool call. "
+            "Put the complete self-contained HTML document in args.content as a valid JSON string. "
+            "Include inline CSS and JavaScript when the goal needs an interactive app.\n\n"
+            f"Goal: {state.goal}\n"
+            f"Current task: {current_task_text}\n"
+            f"Acceptance criteria:\n{criteria_text}\n\n"
+            f"Plan:\n{plan_text}\n\n"
+            f"Compact context:\n{memory_text[: max(1200, self.model_profile.action_context_chars // 2)]}"
+        )
+        schema_hint = (
+            '{"tool":"file_write","args":{"path":"index.html","content":"<!doctype html><html><head>'
+            '<meta charset=\\"utf-8\\"><title>App</title></head><body><script></script></body></html>"},'
+            '"thought_summary":"Authored a complete self-contained HTML app."}'
+        )
+        attempts = 0
+        repaired = False
+        raw_excerpt = ""
+        try:
+            action, metadata = await self._chat_json_with_metrics(prompt, max_tokens=12000, schema_hint=schema_hint)
+            attempts = int(metadata.get("attempts") or 0)
+            repaired = bool(metadata.get("repaired"))
+            raw_excerpt = str(metadata.get("raw_excerpt") or "")
+            normalized = normalize_model_action(action)
+            if not normalized.action:
+                raise ValueError(normalized.message)
+            drafted = normalized.action
+            if drafted["tool"] != "file_write":
+                raise ValueError(f"Model returned {drafted['tool']} instead of file_write for missing HTML artifact.")
+            args = drafted.get("args") if isinstance(drafted.get("args"), dict) else {}
+            path = str(args.get("path") or "index.html").strip() or "index.html"
+            content = str(args.get("content") or "")
+            content_lines = args.get("content_lines")
+            if not content and isinstance(content_lines, list):
+                content = "\n".join(str(line) for line in content_lines)
+                repaired = True
+            if not path.lower().endswith(".html"):
+                path = "index.html"
+                repaired = True
+            if len(content.strip()) < 500 or "<html" not in content.lower() or "</html>" not in content.lower():
+                raise ValueError("Model did not provide a complete HTML document for file_write.")
+            drafted["args"] = {"path": path, "content": content}
+            drafted["thought_summary"] = drafted.get("thought_summary") or "Authored the missing HTML deliverable."
+            self._add_model_interaction(
+                state,
+                kind="action",
+                ok=True,
+                summary=f"Model authored missing HTML artifact via file_write: {path}.",
+                attempts=attempts,
+                repaired=repaired or normalized.repaired,
+                raw_excerpt=raw_excerpt,
+                output_keys=sorted(str(key) for key in action.keys()),
+            )
+            return drafted
+        except (ModelError, ValueError) as exc:
+            error = str(exc)
+            try:
+                parsed_error = json.loads(error)
+                attempts = int(parsed_error.get("attempts") or attempts)
+                raw_excerpt = str(parsed_error.get("raw_excerpt") or raw_excerpt)
+                error = str(parsed_error.get("error") or error)
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                pass
+            self._add_model_interaction(
+                state,
+                kind="action",
+                ok=False,
+                summary="Model failed to author the missing HTML artifact.",
+                attempts=attempts,
+                repaired=repaired,
+                error=error,
+                raw_excerpt=raw_excerpt,
+                output_keys=[],
+            )
+            return None
+
     async def _chat_json(self, prompt: str, *, max_tokens: int, schema_hint: str) -> dict[str, Any]:
         payload, _metadata = await self._chat_json_with_metrics(prompt, max_tokens=max_tokens, schema_hint=schema_hint)
         return payload
@@ -3537,6 +3622,11 @@ class AgentLoopEngine:
                 output_keys=["tool", "args", "thought_summary"],
             )
             return objective_action
+        if artifact_pending and not self._has_workspace_material_for_browser_proof(state):
+            artifact_action = await self._draft_missing_html_artifact_action(run, memory_text)
+            if artifact_action:
+                state.action_context = build_action_context_pack(run.model_copy(update={"state": state}), selected_action=artifact_action)
+                return artifact_action
         if artifact_pending and (state.step_count > 0 or state.tool_calls or state.completed_steps):
             artifact_action = artifact_creation_action(run, state)
             if artifact_action:

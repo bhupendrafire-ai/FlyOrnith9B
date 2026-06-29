@@ -1923,6 +1923,50 @@ def test_choose_action_keeps_initial_workspace_inspection_before_recommendation(
     asyncio.run(run())
 
 
+def test_choose_action_authors_missing_html_artifact_with_file_write(tmp_path: Path) -> None:
+    html = "<!doctype html><html><head><title>KeySynth</title></head><body><main><h1>KeySynth</h1></main><script>const audio=true;</script></body></html>"
+    html = html.replace("</body>", f"<p>{'keyboard mapping ' * 40}</p></body>")
+
+    class HtmlAuthorModel:
+        def __init__(self) -> None:
+            self.max_tokens = 0
+            self.prompt = ""
+
+        async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+            self.max_tokens = max_tokens
+            self.prompt = messages[-1]["content"]
+            return (
+                '{"tool":"file_write","args":{"path":"index.html","content":'
+                + repr(html).replace("'", '"')
+                + '},"thought_summary":"Authored the complete HTML app."}'
+            )
+
+    async def run() -> None:
+        model = HtmlAuthorModel()
+        engine = make_engine(tmp_path)
+        engine.model = model  # type: ignore[assignment]
+        created = engine.store.create_run(
+            "Build a browser web app called KeySynth Studio.",
+            "KeySynth",
+            str(tmp_path),
+            ["A runnable browser web app exists in the workspace with index.html."],
+        )
+        created.state.current_plan = ["Create index.html for the synth app.", "Verify the browser app."]
+        created.state.task_graph = engine._tasks_from_plan(created.state.current_plan, [])
+        created.state.current_task_id = "task-1"
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "file_write"
+        assert action["args"]["path"] == "index.html"
+        assert "<html" in action["args"]["content"]
+        assert model.max_tokens > 700
+        assert "Author the missing browser deliverable" in model.prompt
+        assert created.state.model_interactions[-1].summary == "Model authored missing HTML artifact via file_write: index.html."
+
+    asyncio.run(run())
+
+
 def test_choose_action_falls_back_to_ask_user_for_unavailable_recommendation(tmp_path: Path) -> None:
     class BadActionModel:
         async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
