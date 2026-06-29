@@ -126,6 +126,8 @@ def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
     assert infer_required_labels("Web app runs locally in the browser with one command and loads without errors.") == ["browser"]
     assert infer_required_labels("Latest web source and dashboard screenshot") == ["browser", "web"]
     assert infer_required_labels("Project source files are implemented in the workspace and index.html exists.") == ["verification", "edit"]
+    assert infer_required_labels("Game includes obstacles, collectible coins, score, distance, and speed scaling.") == ["verification"]
+    assert infer_required_labels("Visual design is clean, arcade-like, responsive, and uses original themed assets.") == ["verification", "browser"]
 
 
 def test_runner_slide_controls_trigger_webapp_not_pptx_artifact_detection(tmp_path: Path) -> None:
