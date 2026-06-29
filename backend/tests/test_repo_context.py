@@ -128,6 +128,16 @@ def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
     assert infer_required_labels("Project source files are implemented in the workspace and index.html exists.") == ["verification", "edit"]
 
 
+def test_musical_note_acceptance_uses_browser_not_checkpoint() -> None:
+    assert infer_required_labels(
+        "The app uses browser audio synthesis so keyboard input plays musical notes without external audio files."
+    ) == ["browser"]
+    assert infer_required_labels(
+        "The on-screen synth keyboard clearly shows note names and active notes visibly highlight."
+    ) == ["browser"]
+    assert infer_required_labels("Obsidian checkpoint note is written.") == ["checkpoint"]
+
+
 def test_runner_slide_controls_detect_html_without_scaffolding(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")
     run = store.create_run(

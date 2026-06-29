@@ -3125,6 +3125,25 @@ def test_harness_smoke_gates_ignore_agentorinth_content_artifacts(tmp_path: Path
     assert not any("operator-dispatch restart smoke" in action for action in health.next_actions)
 
 
+def test_harness_smoke_gates_ignore_model_branded_webapps(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    created = engine.store.create_run(
+        "Build an original browser-based synth web app called KeySynth Studio. Ornith must author the app files itself.",
+        "Model branded web app",
+        str(tmp_path),
+        ["A runnable browser web app exists in the workspace."],
+    )
+
+    readiness = engine._build_readiness_completion(created, created.state)
+    health = engine._build_run_health(created, created.state)
+    signal_ids = {signal.id for signal in health.signals}
+
+    assert engine._is_harness_improvement_goal(created, created.state) is False
+    assert readiness.status == "not_applicable"
+    assert "operator_dispatch_restart_smoke_attention" not in signal_ids
+    assert "readiness_smoke_attention" not in signal_ids
+
+
 def test_harness_smoke_gates_apply_to_agentorinth_code_work(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     created = engine.store.create_run(

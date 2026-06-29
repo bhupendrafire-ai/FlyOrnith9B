@@ -17,6 +17,8 @@ HARNESS_GOAL_MARKERS = (
     "long running",
 )
 
+MODEL_NAME_ONLY_MARKERS = {"ornith", "orinth", "orint"}
+
 HARNESS_WORK_MARKERS = (
     "add",
     "build",
@@ -65,10 +67,12 @@ CONTENT_DELIVERABLE_MARKERS = (
     "landing page",
     "one page",
     "page explaining",
+    "browser app",
     "powerpoint",
     "presentation",
     "single page",
     "slide",
+    "web app",
     "web page",
     "webpage",
 )
@@ -76,7 +80,10 @@ CONTENT_DELIVERABLE_MARKERS = (
 
 def is_harness_improvement_goal(goal: str, active_goal: str = "") -> bool:
     text = _normalize(f"{goal} {active_goal}")
-    if not any(marker in text for marker in HARNESS_GOAL_MARKERS):
+    matched_markers = {marker for marker in HARNESS_GOAL_MARKERS if marker in text}
+    if not matched_markers:
+        return False
+    if matched_markers.issubset(MODEL_NAME_ONLY_MARKERS) and not _looks_like_concrete_code_work(text):
         return False
     if _looks_like_content_deliverable(text) and not _looks_like_concrete_code_work(text):
         return False

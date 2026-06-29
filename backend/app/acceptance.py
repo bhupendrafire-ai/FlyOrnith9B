@@ -29,7 +29,23 @@ EVIDENCE_LABEL_WORDS: dict[str, set[str]] = {
         "verify",
     },
     "checkpoint": {"checkpoint", "obsidian", "handoff", "note", "notes", "memory"},
-    "browser": {"dashboard", "browser", "page", "localhost", "local", "start", "starts", "load", "loads", "screenshot"},
+    "browser": {
+        "browser",
+        "dashboard",
+        "load",
+        "loads",
+        "local",
+        "localhost",
+        "on-screen",
+        "page",
+        "screen",
+        "screenshot",
+        "start",
+        "starts",
+        "ui",
+        "visible",
+        "visibly",
+    },
     "edit": {"edit", "code", "write", "implement", "implemented", "patch", "change"},
     "web": {"web", "internet", "source", "sources", "search", "citation", "citations", "latest"},
 }
@@ -65,6 +81,25 @@ SOURCE_FILE_CONTEXT_WORDS = {
     "workspace",
 }
 WEB_CITATION_WORDS = {"internet", "latest", "search", "citation", "citations", "web"}
+MUSIC_NOTE_CONTEXT_WORDS = {
+    "audio",
+    "chord",
+    "chords",
+    "keyboard",
+    "keyboards",
+    "music",
+    "musical",
+    "octave",
+    "octaves",
+    "oscillator",
+    "oscillators",
+    "play",
+    "played",
+    "synth",
+    "synthesis",
+    "waveform",
+    "waveforms",
+}
 
 
 def text_words(text: str) -> list[str]:
@@ -77,17 +112,18 @@ def infer_required_labels(criterion: str) -> list[str]:
         label
         for label in EVIDENCE_LABEL_ORDER
         if words.intersection(EVIDENCE_LABEL_WORDS[label])
-        and not _web_label_is_false_positive(label, words)
+        and not _label_is_false_positive(label, words)
     ]
 
 
-def _web_label_is_false_positive(label: str, words: set[str]) -> bool:
-    if label != "web":
-        return False
-    if "web" in words and not words.intersection(WEB_SOURCE_WORDS) and words.intersection(LOCAL_WEB_APP_WORDS):
-        return True
-    if words.intersection({"source", "sources"}) and not words.intersection(WEB_CITATION_WORDS):
-        return bool(words.intersection(SOURCE_FILE_CONTEXT_WORDS))
+def _label_is_false_positive(label: str, words: set[str]) -> bool:
+    if label == "checkpoint":
+        return bool(words.intersection({"note", "notes"}) and words.intersection(MUSIC_NOTE_CONTEXT_WORDS))
+    if label == "web":
+        if "web" in words and not words.intersection(WEB_SOURCE_WORDS) and words.intersection(LOCAL_WEB_APP_WORDS):
+            return True
+        if words.intersection({"source", "sources"}) and not words.intersection(WEB_CITATION_WORDS):
+            return bool(words.intersection(SOURCE_FILE_CONTEXT_WORDS))
     return False
 
 
