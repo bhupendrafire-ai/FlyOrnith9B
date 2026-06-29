@@ -51,6 +51,20 @@ LOCAL_WEB_APP_WORDS = {
     "starts",
 }
 WEB_SOURCE_WORDS = EVIDENCE_LABEL_WORDS["web"] - {"web"}
+SOURCE_FILE_CONTEXT_WORDS = {
+    "code",
+    "css",
+    "file",
+    "files",
+    "html",
+    "implemented",
+    "index",
+    "javascript",
+    "package",
+    "project",
+    "workspace",
+}
+WEB_CITATION_WORDS = {"internet", "latest", "search", "citation", "citations", "web"}
 
 
 def text_words(text: str) -> list[str]:
@@ -63,17 +77,18 @@ def infer_required_labels(criterion: str) -> list[str]:
         label
         for label in EVIDENCE_LABEL_ORDER
         if words.intersection(EVIDENCE_LABEL_WORDS[label])
-        and not _web_label_is_only_local_app_word(label, words)
+        and not _web_label_is_false_positive(label, words)
     ]
 
 
-def _web_label_is_only_local_app_word(label: str, words: set[str]) -> bool:
-    return (
-        label == "web"
-        and "web" in words
-        and not words.intersection(WEB_SOURCE_WORDS)
-        and bool(words.intersection(LOCAL_WEB_APP_WORDS))
-    )
+def _web_label_is_false_positive(label: str, words: set[str]) -> bool:
+    if label != "web":
+        return False
+    if "web" in words and not words.intersection(WEB_SOURCE_WORDS) and words.intersection(LOCAL_WEB_APP_WORDS):
+        return True
+    if words.intersection({"source", "sources"}) and not words.intersection(WEB_CITATION_WORDS):
+        return bool(words.intersection(SOURCE_FILE_CONTEXT_WORDS))
+    return False
 
 
 def compact_label_progress(required: list[str], matched: list[str]) -> str:

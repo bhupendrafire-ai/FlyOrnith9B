@@ -125,6 +125,7 @@ def test_artifact_acceptance_words_require_verification() -> None:
 def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
     assert infer_required_labels("Web app runs locally in the browser with one command and loads without errors.") == ["browser"]
     assert infer_required_labels("Latest web source and dashboard screenshot") == ["browser", "web"]
+    assert infer_required_labels("Project source files are implemented in the workspace and index.html exists.") == ["verification", "edit"]
 
 
 def test_runner_slide_controls_do_not_trigger_pptx_artifact_detection(tmp_path: Path) -> None:
