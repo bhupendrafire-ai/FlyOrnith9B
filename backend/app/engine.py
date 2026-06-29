@@ -3453,70 +3453,78 @@ class AgentLoopEngine:
             f"Compact context:\n{memory_text[: max(1200, self.model_profile.action_context_chars // 2)]}"
         )
         schema_hint = (
-            '{"tool":"file_write","args":{"path":"index.html","content":"<!doctype html><html><head>'
-            '<meta charset=\\"utf-8\\"><title>App</title></head><body><script></script></body></html>"},'
+            '{"tool":"file_write","args":{"path":"index.html","content":"FULL_COMPLETE_HTML_DOCUMENT_STRING"},'
             '"thought_summary":"Authored a complete self-contained HTML app."}'
         )
         attempts = 0
         repaired = False
         raw_excerpt = ""
-        try:
-            action, metadata = await self._chat_json_with_metrics(prompt, max_tokens=5000, schema_hint=schema_hint)
-            attempts = int(metadata.get("attempts") or 0)
-            repaired = bool(metadata.get("repaired"))
-            raw_excerpt = str(metadata.get("raw_excerpt") or "")
-            normalized = normalize_model_action(action)
-            if not normalized.action:
-                raise ValueError(normalized.message)
-            drafted = normalized.action
-            if drafted["tool"] != "file_write":
-                raise ValueError(f"Model returned {drafted['tool']} instead of file_write for missing HTML artifact.")
-            args = drafted.get("args") if isinstance(drafted.get("args"), dict) else {}
-            path = str(args.get("path") or "index.html").strip() or "index.html"
-            content = str(args.get("content") or "")
-            content_lines = args.get("content_lines")
-            if not content and isinstance(content_lines, list):
-                content = "\n".join(str(line) for line in content_lines)
-                repaired = True
-            if not path.lower().endswith(".html"):
-                path = "index.html"
-                repaired = True
-            if len(content.strip()) < 500 or "<html" not in content.lower() or "</html>" not in content.lower():
-                raise ValueError("Model did not provide a complete HTML document for file_write.")
-            drafted["args"] = {"path": path, "content": content}
-            drafted["thought_summary"] = drafted.get("thought_summary") or "Authored the missing HTML deliverable."
-            self._add_model_interaction(
-                state,
-                kind="action",
-                ok=True,
-                summary=f"Model authored missing HTML artifact via file_write: {path}.",
-                attempts=attempts,
-                repaired=repaired or normalized.repaired,
-                raw_excerpt=raw_excerpt,
-                output_keys=sorted(str(key) for key in action.keys()),
-            )
-            return drafted
-        except (ModelError, ValueError) as exc:
-            error = str(exc)
+        error = ""
+        author_prompt = prompt
+        for author_attempt in range(2):
             try:
-                parsed_error = json.loads(error)
-                attempts = int(parsed_error.get("attempts") or attempts)
-                raw_excerpt = str(parsed_error.get("raw_excerpt") or raw_excerpt)
-                error = str(parsed_error.get("error") or error)
-            except (json.JSONDecodeError, AttributeError, TypeError):
-                pass
-            self._add_model_interaction(
-                state,
-                kind="action",
-                ok=False,
-                summary="Model failed to author the missing HTML artifact.",
-                attempts=attempts,
-                repaired=repaired,
-                error=error,
-                raw_excerpt=raw_excerpt,
-                output_keys=[],
-            )
-            return None
+                action, metadata = await self._chat_json_with_metrics(author_prompt, max_tokens=5000, schema_hint=schema_hint)
+                attempts += int(metadata.get("attempts") or 0)
+                repaired = repaired or bool(metadata.get("repaired"))
+                raw_excerpt = str(metadata.get("raw_excerpt") or raw_excerpt)
+                normalized = normalize_model_action(action)
+                if not normalized.action:
+                    raise ValueError(normalized.message)
+                drafted = normalized.action
+                if drafted["tool"] != "file_write":
+                    raise ValueError(f"Model returned {drafted['tool']} instead of file_write for missing HTML artifact.")
+                args = drafted.get("args") if isinstance(drafted.get("args"), dict) else {}
+                path = str(args.get("path") or "index.html").strip() or "index.html"
+                content = str(args.get("content") or "")
+                content_lines = args.get("content_lines")
+                if not content and isinstance(content_lines, list):
+                    content = "\n".join(str(line) for line in content_lines)
+                    repaired = True
+                if not path.lower().endswith(".html"):
+                    path = "index.html"
+                    repaired = True
+                if len(content.strip()) < 500 or "<html" not in content.lower() or "</html>" not in content.lower():
+                    raise ValueError("Model did not provide a complete HTML document for file_write.")
+                drafted["args"] = {"path": path, "content": content}
+                drafted["thought_summary"] = drafted.get("thought_summary") or "Authored the missing HTML deliverable."
+                self._add_model_interaction(
+                    state,
+                    kind="action",
+                    ok=True,
+                    summary=f"Model authored missing HTML artifact via file_write: {path}.",
+                    attempts=attempts,
+                    repaired=repaired or normalized.repaired or author_attempt > 0,
+                    raw_excerpt=raw_excerpt,
+                    output_keys=sorted(str(key) for key in action.keys()),
+                )
+                return drafted
+            except (ModelError, ValueError) as exc:
+                error = str(exc)
+                try:
+                    parsed_error = json.loads(error)
+                    attempts += int(parsed_error.get("attempts") or 0)
+                    raw_excerpt = str(parsed_error.get("raw_excerpt") or raw_excerpt)
+                    error = str(parsed_error.get("error") or error)
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    pass
+                if author_attempt == 0:
+                    author_prompt = (
+                        f"{prompt}\n\nPrevious attempt failed: {error}. "
+                        "Do not copy the JSON example or placeholder content. Return real index.html code now."
+                    )
+                    continue
+        self._add_model_interaction(
+            state,
+            kind="action",
+            ok=False,
+            summary="Model failed to author the missing HTML artifact.",
+            attempts=attempts,
+            repaired=repaired,
+            error=error,
+            raw_excerpt=raw_excerpt,
+            output_keys=[],
+        )
+        return None
 
     async def _chat_json(self, prompt: str, *, max_tokens: int, schema_hint: str) -> dict[str, Any]:
         payload, _metadata = await self._chat_json_with_metrics(prompt, max_tokens=max_tokens, schema_hint=schema_hint)

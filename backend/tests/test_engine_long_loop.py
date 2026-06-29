@@ -1967,6 +1967,50 @@ def test_choose_action_authors_missing_html_artifact_with_file_write(tmp_path: P
     asyncio.run(run())
 
 
+def test_choose_action_retries_when_html_author_copies_placeholder(tmp_path: Path) -> None:
+    html = "<!doctype html><html><head><title>KeySynth</title></head><body><h1>KeySynth</h1><script>const audio=true;</script></body></html>"
+    html = html.replace("</body>", f"<p>{'mapped playable key ' * 45}</p></body>")
+
+    class PlaceholderThenHtmlModel:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.prompts: list[str] = []
+
+        async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
+            self.calls += 1
+            self.prompts.append(messages[-1]["content"])
+            if self.calls == 1:
+                return '{"tool":"file_write","args":{"path":"index.html","content":"FULL_COMPLETE_HTML_DOCUMENT_STRING"},"thought_summary":"Copied placeholder."}'
+            return (
+                '{"tool":"file_write","args":{"path":"index.html","content":'
+                + repr(html).replace("'", '"')
+                + '},"thought_summary":"Authored the complete HTML app."}'
+            )
+
+    async def run() -> None:
+        model = PlaceholderThenHtmlModel()
+        engine = make_engine(tmp_path)
+        engine.model = model  # type: ignore[assignment]
+        created = engine.store.create_run(
+            "Build a browser web app called KeySynth Studio.",
+            "KeySynth",
+            str(tmp_path),
+            ["A runnable browser web app exists in the workspace with index.html."],
+        )
+        created.state.current_plan = ["Create index.html for the synth app.", "Verify the browser app."]
+        created.state.task_graph = engine._tasks_from_plan(created.state.current_plan, [])
+        created.state.current_task_id = "task-1"
+
+        action = await engine._choose_action(created, "tiny context")
+
+        assert action["tool"] == "file_write"
+        assert model.calls == 2
+        assert "Previous attempt failed" in model.prompts[-1]
+        assert created.state.model_interactions[-1].repaired is True
+
+    asyncio.run(run())
+
+
 def test_choose_action_falls_back_to_ask_user_for_unavailable_recommendation(tmp_path: Path) -> None:
     class BadActionModel:
         async def chat(self, messages, *, temperature=0.2, max_tokens=1200):  # noqa: ANN001
