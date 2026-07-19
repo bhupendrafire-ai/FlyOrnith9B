@@ -51,6 +51,7 @@ from app.schemas import (
     ToolCallRecord,
     VerificationOutcomeRecord,
     VerificationOutcomeReport,
+    WorkspaceIsolation,
 )
 
 
@@ -131,11 +132,31 @@ def test_local_web_app_acceptance_uses_browser_not_internet_search() -> None:
 def test_musical_note_acceptance_uses_browser_not_checkpoint() -> None:
     assert infer_required_labels(
         "The app uses browser audio synthesis so keyboard input plays musical notes without external audio files."
-    ) == ["browser"]
+    ) == ["browser", "interaction"]
     assert infer_required_labels(
         "The on-screen synth keyboard clearly shows note names and active notes visibly highlight."
+    ) == ["browser", "interaction"]
+    assert infer_required_labels(
+        "The user can play notes from the computer keyboard with low-latency audio feedback."
+    ) == ["interaction"]
+    assert infer_required_labels(
+        "The app shows a clear on-screen synth keyboard with visible note names and key mappings."
     ) == ["browser"]
     assert infer_required_labels("Obsidian checkpoint note is written.") == ["checkpoint"]
+
+
+def test_functional_web_app_criterion_does_not_use_generic_html_artifact_check(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    run = store.create_run(
+        "Build an original browser-based synth web app called KeySynth Studio.",
+        "KeySynth",
+        str(tmp_path),
+        ["The user can play notes from the computer keyboard with low-latency audio feedback."],
+    )
+
+    command = artifact_verification_command(run, run.state, run.state.acceptance_criteria[0])
+
+    assert command == ""
 
 
 def test_runner_slide_controls_detect_html_without_scaffolding(tmp_path: Path) -> None:
@@ -955,6 +976,30 @@ def test_context_compiler_includes_action_context_pack(tmp_path: Path) -> None:
     assert "Action context pack:" in prompt
     assert "selected_proof=run_tests:verification" in prompt
     assert "failure_ledger=timeout:shell:x2" in prompt
+
+
+def test_action_context_pack_teaches_active_workspace_paths(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs.sqlite3")
+    source = tmp_path / "source"
+    workspace = tmp_path / "runs" / "run-1" / "workspace"
+    source.mkdir()
+    workspace.mkdir(parents=True)
+    run = store.create_run("Use isolated files", "Harness", str(workspace), ["Files are written"])
+    run.state.workspace_isolation = WorkspaceIsolation(
+        enabled=True,
+        mode="copy",
+        source_path=str(source.resolve()),
+        workspace_path=str(workspace.resolve()),
+        summary="Copied 0 file(s) into isolated workspace.",
+    )
+
+    pack = build_action_context_pack(run)
+
+    assert str(workspace.resolve()) in pack.compact_prompt
+    assert str(source.resolve()) in pack.compact_prompt
+    assert "file paths are relative to active workspace" in pack.compact_prompt
+    assert "promote when ready" in pack.compact_prompt
+
 
 def test_context_compiler_includes_source_evidence_preview(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs.sqlite3")

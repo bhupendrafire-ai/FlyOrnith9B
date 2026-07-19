@@ -924,6 +924,10 @@ class ActionContextPack(BaseModel):
     run_id: str = ""
     generated_at: str = ""
     milestone: str = ""
+    workspace_summary: str = ""
+    active_workspace_path: str = ""
+    source_workspace_path: str = ""
+    path_guidance: str = ""
     current_task_id: str = ""
     current_task_title: str = ""
     task_transition_ledger: list[str] = Field(default_factory=list)

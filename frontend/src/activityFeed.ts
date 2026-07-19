@@ -297,7 +297,7 @@ export function buildActivityFeed(input: ActivityFeedInput): ActivityFeedItem[] 
   const toolCallWindow = hasWorkstream ? selected.state.tool_calls.slice(-6) : selected.state.tool_calls.slice(-18);
   const commandWindow = hasWorkstream ? selected.state.commands_run.slice(-4) : selected.state.commands_run.slice(-10);
   const eventWindow = hasWorkstream
-    ? input.events.filter((event) => event.kind === "workstream").slice(-48)
+    ? input.events.filter((event) => event.kind === "workstream" || isConversationEvent(event)).slice(-56)
     : input.events.slice(-24);
 
   modelInteractionWindow.forEach((interaction) => {
@@ -573,6 +573,10 @@ function previewText(preview: Record<string, unknown>, keys: string[]): string {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+function isConversationEvent(event: EventRecord): boolean {
+  return eventRole(event.kind) === "user";
 }
 
 function compactJson(value: unknown): string {

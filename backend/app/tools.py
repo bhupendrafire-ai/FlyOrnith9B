@@ -27,6 +27,7 @@ TOOL_NAMES = [
     "web_fetch",
     "browser_open",
     "browser_screenshot",
+    "browser_interaction_test",
     "browser_click",
     "browser_type",
     "desktop_screenshot",
@@ -82,6 +83,15 @@ class ToolResult:
     git_checkpoint: GitCheckpointReport | None = None
 
 
+@dataclass(frozen=True)
+class WorkspacePathResolution:
+    requested_path: str
+    relative_path: str
+    target: Path
+    remapped_from_source: bool = False
+    note: str = ""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -107,7 +117,7 @@ class ToolRegistry:
         if not self.config.enable_web_tools:
             disabled.update({"web_search", "web_fetch"})
         if not self.config.enable_browser_tools:
-            disabled.update({"browser_open", "browser_screenshot", "browser_click", "browser_type"})
+            disabled.update({"browser_open", "browser_screenshot", "browser_interaction_test", "browser_click", "browser_type"})
         if not self.config.enable_desktop_control:
             disabled.update({"desktop_screenshot", "desktop_window_list", "desktop_click", "desktop_type"})
         return {
@@ -282,11 +292,13 @@ class ToolRunner:
         config: AppConfig,
         safety: SafetyGate | None = None,
         approval_mode: str | None = None,
+        source_workspace: Path | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
+        self.source_workspace = source_workspace.resolve() if source_workspace else None
         self.config = config
         self.safety = safety or SafetyGate(config, approval_mode=approval_mode)
-        self.artifact_dir = (Path(__file__).resolve().parents[2] / "data" / "artifacts").resolve()
+        self.artifact_dir = (self.workspace / ".agentornith" / "artifacts").resolve()
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         self.patch_backup_dir = (Path(__file__).resolve().parents[2] / "data" / "patch_backups").resolve()
         self.patch_backup_dir.mkdir(parents=True, exist_ok=True)
@@ -295,10 +307,26 @@ class ToolRunner:
 
     async def execute(self, tool_name: str, args: dict[str, Any] | None = None, *, approved: bool = False) -> ToolResult:
         args = args or {}
+        if tool_name in {"file_read", "file_write"}:
+            args = self._normalize_file_tool_args(args)
         decision = self.safety.classify_tool(tool_name, args, self.workspace)
         if decision.needs_approval and not approved:
+            if tool_name in {"file_read", "file_write"} and "outside WORKSPACE_PATH" in decision.reason:
+                return self._path_blocked_result(
+                    tool_name,
+                    str(args.get("_requested_path") or args.get("path") or ""),
+                    decision.reason,
+                    True,
+                )
             return ToolResult(False, tool_name, decision.reason, args, needs_approval=True)
         if not decision.allowed and not approved:
+            if tool_name in {"file_read", "file_write"} and "outside WORKSPACE_PATH" in decision.reason:
+                return self._path_blocked_result(
+                    tool_name,
+                    str(args.get("_requested_path") or args.get("path") or ""),
+                    decision.reason,
+                    False,
+                )
             return ToolResult(False, tool_name, decision.reason, args)
 
         if tool_name == "shell":
@@ -319,9 +347,18 @@ class ToolRunner:
         if tool_name == "run_tests":
             return await self.run_command(str(args.get("command") or "python -m pytest"), timeout=int(args.get("timeout", 120)), approved=True)
         if tool_name == "file_read":
-            return self.read_file(str(args.get("path", "")), limit=int(args.get("limit", 20000)))
+            return self.read_file(
+                str(args.get("path", "")),
+                limit=int(args.get("limit", 20000)),
+                requested_path=str(args.get("_requested_path") or ""),
+            )
         if tool_name == "file_write":
-            return self.write_file(str(args.get("path", "")), str(args.get("content", "")), approved=True)
+            return self.write_file(
+                str(args.get("path", "")),
+                str(args.get("content", "")),
+                approved=True,
+                requested_path=str(args.get("_requested_path") or ""),
+            )
         if tool_name == "web_search":
             return await self.web_search(str(args.get("query", "")), limit=int(args.get("limit", 5)))
         if tool_name == "web_fetch":
@@ -330,6 +367,11 @@ class ToolRunner:
             return await self.browser_open(str(args.get("url", "")))
         if tool_name == "browser_screenshot":
             return await self.browser_screenshot(str(args.get("url", "about:blank")))
+        if tool_name == "browser_interaction_test":
+            return await self.browser_interaction_test(
+                str(args.get("url", "about:blank")),
+                criterion=str(args.get("criterion") or ""),
+            )
         if tool_name in {"browser_click", "browser_type"}:
             return ToolResult(True, tool_name, "Browser interaction recorded; live session execution is reserved for supervised mode.", args)
         if tool_name == "desktop_window_list":
@@ -401,38 +443,63 @@ class ToolRunner:
             data={"command": command, "returncode": proc.returncode, "stdout": stdout, "stderr": stderr},
         )
 
-    def list_files(self, limit: int = 200) -> ToolResult:
+    def list_files(self, limit: int = 200, *, root: Path | None = None, label: str = ".") -> ToolResult:
+        scan_root = (root or self.workspace).resolve()
         paths: list[str] = []
-        for path in sorted(self.workspace.rglob("*")):
-            if any(part in {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"} for part in path.parts):
+        for path in sorted(scan_root.rglob("*")):
+            if any(part in {".agentornith", ".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"} for part in path.parts):
                 continue
             if path.is_file():
                 paths.append(str(path.relative_to(self.workspace)))
             if len(paths) >= limit:
                 break
-        return ToolResult(True, "file_read", f"Found {len(paths)} files.", {"files": paths})
+        summary = f"Found {len(paths)} files." if label in {"", "."} else f"Found {len(paths)} files under {label}."
+        return ToolResult(
+            True,
+            "file_read",
+            summary,
+            {
+                "files": paths,
+                "workspace_path": str(self.workspace),
+                "source_workspace": str(self.source_workspace) if self.source_workspace else "",
+                "path_guidance": self._path_guidance(),
+            },
+        )
 
-    def read_file(self, relative_path: str, limit: int = 20000) -> ToolResult:
+    def read_file(self, relative_path: str, limit: int = 20000, *, requested_path: str = "") -> ToolResult:
         if relative_path in {"", ".", "*"}:
             return self.list_files(limit=min(limit, 500))
-        target = (self.workspace / relative_path).resolve()
-        decision = self.safety.classify_path(self.workspace, target)
-        if decision.needs_approval:
-            return ToolResult(False, "file_read", decision.reason, {"path": str(target)}, True)
+        try:
+            resolution = self._resolve_workspace_path_request(requested_path or relative_path)
+        except ValueError as exc:
+            return self._path_blocked_result("file_read", requested_path or relative_path, str(exc), False)
+        target = resolution.target
+        if target.is_dir():
+            return self.list_files(limit=min(limit, 500), root=target, label=resolution.relative_path)
         try:
             text = target.read_text(encoding="utf-8", errors="replace")[:limit]
         except OSError as exc:
-            return ToolResult(False, "file_read", str(exc), {"path": str(target)})
-        return ToolResult(True, "file_read", f"Read {relative_path}.", {"path": relative_path, "content": redact_secrets(text)})
+            return self._file_missing_result("file_read", resolution, str(exc))
+        summary = f"Read {resolution.relative_path}."
+        if resolution.remapped_from_source:
+            summary = f"Read {resolution.relative_path} after remapping the source workspace path to the active workspace."
+        return ToolResult(True, "file_read", summary, self._path_data(resolution, content=redact_secrets(text)))
 
-    def write_file(self, relative_path: str, content: str, *, approved: bool = False) -> ToolResult:
-        target = (self.workspace / relative_path).resolve()
+    def write_file(self, relative_path: str, content: str, *, approved: bool = False, requested_path: str = "") -> ToolResult:
+        try:
+            resolution = self._resolve_workspace_path_request(requested_path or relative_path)
+        except ValueError as exc:
+            return self._path_blocked_result("file_write", requested_path or relative_path, str(exc), False)
+        target = resolution.target
         decision = self.safety.classify_path(self.workspace, target)
         if decision.needs_approval and not approved:
-            return ToolResult(False, "file_write", decision.reason, {"path": str(target)}, True)
+            return ToolResult(False, "file_write", decision.reason, self._path_data(resolution), True)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return ToolResult(True, "file_write", f"Wrote {relative_path}.", {"path": relative_path})
+        summary = f"Wrote {resolution.relative_path}."
+        if resolution.remapped_from_source:
+            summary = f"Wrote {resolution.relative_path} in the active workspace after remapping the source workspace path."
+        return ToolResult(True, "file_write", summary, self._path_data(resolution))
 
     def apply_patch_payload(self, args: dict[str, Any]) -> ToolResult:
         patch_id = str(args.get("patch_id") or args.get("id") or f"patch-{uuid4().hex[:8]}")
@@ -446,8 +513,9 @@ class ToolRunner:
             applied_files: list[str] = []
 
             for change in changes:
-                relative_path = str(change["path"])
-                target = self._resolve_workspace_path(relative_path)
+                resolution = self._resolve_workspace_path_request(str(change["path"]))
+                relative_path = resolution.relative_path
+                target = resolution.target
                 before = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
                 after = str(change["new"])
                 self._backup_file(target, relative_path, backup_dir, manifest_files)
@@ -618,10 +686,12 @@ class ToolRunner:
         for item in files:
             if not isinstance(item, dict):
                 continue
-            relative_path = str(item.get("path") or item.get("file") or "").strip()
-            if not relative_path:
+            requested_path = str(item.get("path") or item.get("file") or "").strip()
+            if not requested_path:
                 raise ValueError("Structured patch file entry is missing a path.")
-            target = self._resolve_workspace_path(relative_path)
+            resolution = self._resolve_workspace_path_request(requested_path)
+            relative_path = resolution.relative_path
+            target = resolution.target
             current = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
             old = item.get("old")
             if old is not None and str(old) not in current:
@@ -642,8 +712,10 @@ class ToolRunner:
     def _unified_diff_changes(self, diff: str) -> list[dict[str, str]]:
         file_patches = self._parse_unified_diff(diff)
         changes: list[dict[str, str]] = []
-        for relative_path, hunks in file_patches:
-            target = self._resolve_workspace_path(relative_path)
+        for requested_path, hunks in file_patches:
+            resolution = self._resolve_workspace_path_request(requested_path)
+            relative_path = resolution.relative_path
+            target = resolution.target
             current_lines = target.read_text(encoding="utf-8", errors="replace").splitlines() if target.exists() else []
             next_lines = current_lines[:]
             search_from = 0
@@ -718,14 +790,130 @@ class ToolRunner:
         )
 
     def _resolve_workspace_path(self, relative_path: str) -> Path:
-        raw = Path(relative_path)
+        return self._resolve_workspace_path_request(relative_path).target
+
+    def _resolve_workspace_path_request(self, path_value: str) -> WorkspacePathResolution:
+        requested = str(path_value or "").strip() or "."
+        raw = Path(requested)
+        remapped_from_source = False
+        note = ""
         if raw.is_absolute():
-            raise ValueError("Patch paths must be relative to the run workspace.")
-        target = (self.workspace / raw).resolve()
+            candidate = raw.resolve()
+            try:
+                relative = candidate.relative_to(self.workspace)
+            except ValueError:
+                if not self.source_workspace:
+                    raise ValueError(self._outside_workspace_message(requested))
+                try:
+                    relative = candidate.relative_to(self.source_workspace)
+                except ValueError as exc:
+                    raise ValueError(self._outside_workspace_message(requested)) from exc
+                remapped_from_source = True
+                note = "source_workspace_path_remapped_to_active_workspace"
+        else:
+            relative = raw
+        relative = Path(relative)
+        target = (self.workspace / relative).resolve()
         decision = self.safety.classify_path(self.workspace, target)
         if decision.needs_approval:
-            raise ValueError(decision.reason)
-        return target
+            raise ValueError(self._outside_workspace_message(requested))
+        return WorkspacePathResolution(
+            requested_path=requested,
+            relative_path=str(relative) if str(relative) else ".",
+            target=target,
+            remapped_from_source=remapped_from_source,
+            note=note,
+        )
+
+    def _normalize_file_tool_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        requested = str(args.get("path", ""))
+        if not requested or requested in {"", ".", "*"}:
+            return args
+        try:
+            resolution = self._resolve_workspace_path_request(requested)
+        except ValueError:
+            normalized = dict(args)
+            normalized["_requested_path"] = requested
+            return normalized
+        if resolution.requested_path != resolution.relative_path or resolution.remapped_from_source:
+            normalized = dict(args)
+            normalized["path"] = resolution.relative_path
+            normalized["_requested_path"] = requested
+            if resolution.remapped_from_source:
+                normalized["_path_note"] = resolution.note
+            return normalized
+        return args
+
+    def _path_data(self, resolution: WorkspacePathResolution, **extra: Any) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "path": resolution.relative_path,
+            "requested_path": resolution.requested_path,
+            "target_path": str(resolution.target),
+            "workspace_path": str(self.workspace),
+            "source_workspace": str(self.source_workspace) if self.source_workspace else "",
+            "remapped_from_source": resolution.remapped_from_source,
+            "path_guidance": self._path_guidance(),
+        }
+        if resolution.note:
+            data["path_note"] = resolution.note
+        data.update(extra)
+        return data
+
+    def _path_blocked_result(self, tool_name: str, requested_path: str, reason: str, needs_approval: bool) -> ToolResult:
+        return ToolResult(
+            False,
+            tool_name,
+            f"{reason} {self._path_guidance()}",
+            {
+                "path": requested_path,
+                "workspace_path": str(self.workspace),
+                "source_workspace": str(self.source_workspace) if self.source_workspace else "",
+                "path_guidance": self._path_guidance(),
+                "nearby_files": self._nearby_files(requested_path),
+            },
+            needs_approval=needs_approval,
+        )
+
+    def _file_missing_result(self, tool_name: str, resolution: WorkspacePathResolution, error: str) -> ToolResult:
+        nearby = self._nearby_files(resolution.relative_path)
+        nearby_text = f" Nearby files: {', '.join(nearby[:5])}." if nearby else ""
+        return ToolResult(
+            False,
+            tool_name,
+            f"File not found or unreadable: {resolution.relative_path}. {self._path_guidance()}{nearby_text}",
+            self._path_data(resolution, error=error, nearby_files=nearby),
+        )
+
+    def _path_guidance(self) -> str:
+        if self.source_workspace and self.source_workspace != self.workspace:
+            return (
+                "Use paths relative to the active workspace for file_read/file_write/patch_apply; "
+                "source workspace absolute paths are translated to the same relative path in the active workspace."
+            )
+        return "Use paths relative to the active workspace for file_read/file_write/patch_apply."
+
+    def _outside_workspace_message(self, requested_path: str) -> str:
+        source = f" source_workspace={self.source_workspace}" if self.source_workspace else ""
+        return f"Path is outside the active workspace. requested_path={requested_path} active_workspace={self.workspace}{source}."
+
+    def _nearby_files(self, requested_path: str, limit: int = 8) -> list[str]:
+        requested_name = Path(str(requested_path or "")).name.lower()
+        files: list[str] = []
+        for path in sorted(self.workspace.rglob("*")):
+            if any(part in {".agentornith", ".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"} for part in path.parts):
+                continue
+            if not path.is_file():
+                continue
+            relative = str(path.relative_to(self.workspace))
+            if (
+                not requested_name
+                or requested_name in path.name.lower()
+                or path.suffix.lower() in {".html", ".py", ".js", ".ts", ".tsx", ".css", ".md"}
+            ):
+                files.append(relative)
+            if len(files) >= limit:
+                break
+        return files
 
     def _backup_scope_dir(self) -> Path:
         if self.workspace.name == "workspace" and self.workspace.parent.name.startswith("run-"):
@@ -848,6 +1036,158 @@ class ToolRunner:
             "browser_screenshot",
             snapshot.summary,
             {"url": url, "path": str(shot_path), "visible_text": visible_text, "console_errors": console_errors[-8:]},
+            desktop_snapshots=[snapshot],
+        )
+
+    async def browser_interaction_test(self, url: str, *, criterion: str = "") -> ToolResult:
+        if not self.config.browser_executable_path:
+            return ToolResult(False, "browser_interaction_test", "No Chrome/Edge executable configured.", {"url": url})
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return ToolResult(False, "browser_interaction_test", "Playwright is not installed.", {"url": url})
+
+        shot_path = self.artifact_dir / f"browser-interaction-{uuid4().hex[:8]}.png"
+        console_errors: list[str] = []
+        page_errors: list[str] = []
+        visible_text = ""
+        control_count = 0
+        key_like_count = 0
+        active_before = 0
+        active_after_down = 0
+        active_after_up = 0
+        audio_before = 0
+        audio_after_down = 0
+        fake_audio_script = """
+(() => {
+  const events = [];
+  class Param {
+    constructor(value = 0) { this.value = value; }
+    setValueAtTime(value) { this.value = value; return this; }
+    linearRampToValueAtTime(value) { this.value = value; return this; }
+    exponentialRampToValueAtTime(value) { this.value = value; return this; }
+    cancelScheduledValues() { return this; }
+  }
+  class Node {
+    connect() { return this; }
+    disconnect() { return this; }
+  }
+  class OscillatorNode extends Node {
+    constructor() { super(); this.frequency = new Param(440); this.type = "sine"; }
+    start() { events.push({ type: "oscillator-start", frequency: this.frequency.value, waveform: this.type }); }
+    stop() { events.push({ type: "oscillator-stop" }); }
+  }
+  class GainNode extends Node {
+    constructor() { super(); this.gain = new Param(1); }
+  }
+  class BiquadFilterNode extends Node {
+    constructor() { super(); this.frequency = new Param(350); this.Q = new Param(1); this.type = "lowpass"; }
+  }
+  class AnalyserNode extends Node {
+    constructor() { super(); this.fftSize = 2048; this.smoothingTimeConstant = 0; }
+    getByteTimeDomainData(values) { for (let i = 0; i < values.length; i += 1) values[i] = 128; }
+  }
+  class AudioContext {
+    constructor() { this.currentTime = 0; this.state = "running"; this.destination = new Node(); }
+    resume() { this.state = "running"; return Promise.resolve(); }
+    createOscillator() { return new OscillatorNode(); }
+    createGain() { return new GainNode(); }
+    createBiquadFilter() { return new BiquadFilterNode(); }
+    createAnalyser() { return new AnalyserNode(); }
+  }
+  window.__agentOrinthAudioEvents = events;
+  window.AudioContext = AudioContext;
+  window.webkitAudioContext = AudioContext;
+})();
+"""
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True, executable_path=self.config.browser_executable_path)
+                page = await browser.new_page(viewport={"width": 1440, "height": 1000})
+                page.on("console", lambda msg: console_errors.append(msg.text[:500]) if msg.type == "error" else None)
+                page.on("pageerror", lambda exc: page_errors.append(str(exc)[:500]))
+                await page.add_init_script(fake_audio_script)
+                await page.goto(url, wait_until="domcontentloaded", timeout=self.config.web_timeout_seconds * 1000)
+                await page.wait_for_timeout(300)
+                try:
+                    visible_text = (await page.locator("body").inner_text(timeout=1000))[:4000]
+                except Exception:
+                    visible_text = ""
+                control_count = await page.locator("button,input,select,textarea,[role=button],[tabindex]").count()
+                key_like_count = await page.locator(".key,[data-note],[data-key],[aria-keyshortcuts]").count()
+                active_before = await page.locator(".pressed,.active,[aria-pressed='true']").count()
+                audio_before = int(await page.evaluate("() => (window.__agentOrinthAudioEvents || []).length"))
+                await page.keyboard.down("a")
+                await page.wait_for_timeout(150)
+                active_after_down = await page.locator(".pressed,.active,[aria-pressed='true']").count()
+                audio_after_down = int(await page.evaluate("() => (window.__agentOrinthAudioEvents || []).length"))
+                await page.keyboard.up("a")
+                await page.wait_for_timeout(150)
+                active_after_up = await page.locator(".pressed,.active,[aria-pressed='true']").count()
+                await page.screenshot(path=str(shot_path), full_page=True)
+                await browser.close()
+        except Exception as exc:
+            return ToolResult(False, "browser_interaction_test", f"Browser interaction proof failed: {exc}", {"url": url})
+
+        criterion_lower = criterion.lower()
+        needs_keyboard = any(
+            token in criterion_lower
+            for token in ("audio", "feedback", "keyboard", "key ", "keys", "note", "notes", "play", "pressed", "highlight")
+        )
+        needs_controls = any(
+            token in criterion_lower
+            for token in ("attack", "control", "controls", "filter", "octave", "release", "sustain", "volume", "waveform")
+        )
+        keyboard_ok = not needs_keyboard or audio_after_down > audio_before or active_after_down > active_before
+        controls_ok = not needs_controls or control_count > 0
+        generic_interaction_ok = control_count > 0 or key_like_count > 0 or audio_after_down > audio_before or active_after_down > active_before
+        page_ok = bool(visible_text.strip()) and not console_errors and not page_errors
+        ok = page_ok and controls_ok and (keyboard_ok if (needs_keyboard or needs_controls) else generic_interaction_ok)
+        failures: list[str] = []
+        if not visible_text.strip():
+            failures.append("empty body text")
+        if console_errors:
+            failures.append(f"console errors={len(console_errors)}")
+        if page_errors:
+            failures.append(f"page errors={len(page_errors)}")
+        if not controls_ok:
+            failures.append("expected controls not found")
+        if needs_keyboard and not keyboard_ok:
+            failures.append("keyboard press did not create audio or active-key evidence")
+        if not needs_keyboard and not needs_controls and not generic_interaction_ok:
+            failures.append("no interactive elements or state changes found")
+
+        summary = (
+            "Browser interaction proof passed."
+            if ok
+            else f"Browser interaction proof failed: {', '.join(failures) or 'criteria not satisfied'}."
+        )
+        snapshot = DesktopSnapshot(
+            id=f"browser-interaction-{uuid4().hex[:8]}",
+            timestamp=utc_now(),
+            title=f"Browser interaction proof: {url}",
+            path=str(shot_path),
+            summary=summary,
+        )
+        return ToolResult(
+            ok,
+            "browser_interaction_test",
+            summary,
+            {
+                "url": url,
+                "path": str(shot_path),
+                "criterion": criterion,
+                "visible_text": visible_text,
+                "console_errors": console_errors[-8:],
+                "page_errors": page_errors[-8:],
+                "control_count": control_count,
+                "key_like_count": key_like_count,
+                "active_before": active_before,
+                "active_after_down": active_after_down,
+                "active_after_up": active_after_up,
+                "audio_before": audio_before,
+                "audio_after_down": audio_after_down,
+            },
             desktop_snapshots=[snapshot],
         )
 

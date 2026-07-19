@@ -150,7 +150,29 @@ def build_action_readiness(
         )
         return _report(run, resume_decisions, task, "needs_replan", False, "Replan around the blocked or failed task.", "", "", issues)
 
-    if expected_artifact_suffix(run, state) and not expected_artifact_exists(run, state):
+    repeated_open = _repeated_unsatisfied_recommendations(state)
+    if repeated_open:
+        issues.append(
+            ActionReadinessIssue(
+                id="repeated_unsatisfied_proof",
+                severity="warning",
+                summary="A recommended proof action repeatedly ran without satisfying its intended evidence.",
+                evidence=repeated_open[:4],
+            )
+        )
+        return _report(
+            run,
+            resume_decisions,
+            task,
+            "needs_replan",
+            True,
+            "Replan the proof strategy before repeating the same unresolved evidence action.",
+            "",
+            "",
+            issues,
+        )
+
+    if expected_artifact_suffix(run, state) and not expected_artifact_exists(run, state) and _artifact_missing_blocks_action(state):
         issues.append(
             ActionReadinessIssue(
                 id="artifact_missing_before_verification",
@@ -200,6 +222,26 @@ def build_action_readiness(
     if recommendation:
         suggested_tool = recommendation.tool_kind
         suggested_label = recommendation.label
+        if task.kind == "edit" and task.status in {"pending", "in_progress"} and not _has_edit_evidence(state):
+            issues.append(
+                ActionReadinessIssue(
+                    id="edit_task_before_proof",
+                    severity="info",
+                    summary="The current edit task should produce implementation evidence before proof tools run.",
+                    evidence=[f"{task.id}:{task.title}", recommendation.action],
+                )
+            )
+            return _report(
+                run,
+                resume_decisions,
+                task,
+                "ready",
+                True,
+                "Continue the current edit task before running acceptance proof.",
+                "",
+                "",
+                issues,
+            )
         if (
             recommendation.label == "verification"
             and _open_edit_required(state)
@@ -334,12 +376,45 @@ def _all_acceptance_verified(state: Any) -> bool:
     return bool(state.acceptance_evidence) and all(item.status == "verified" for item in state.acceptance_evidence)
 
 
+def _artifact_missing_blocks_action(state: Any) -> bool:
+    if not state.acceptance_evidence:
+        return True
+    for item in state.acceptance_evidence:
+        if item.status == "verified":
+            continue
+        labels = set(item.required_labels or infer_required_labels(item.criterion))
+        if not labels or labels.intersection({"edit", "verification"}):
+            return True
+    return False
+
+
+def _repeated_unsatisfied_recommendations(state: Any) -> list[str]:
+    satisfied: set[tuple[str, str, str]] = set()
+    counts: dict[tuple[str, str, str], int] = {}
+    latest: dict[tuple[str, str, str], str] = {}
+    for trace in getattr(state, "acceptance_recommendation_traces", [])[-12:]:
+        tool = trace.selected_tool or trace.recommended_tool
+        key = (trace.criterion_id, trace.label, tool)
+        if trace.status == "satisfied":
+            satisfied.add(key)
+            continue
+        if trace.status != "executed" or key in satisfied:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        latest[key] = trace.result_summary or trace.action_summary
+    return [
+        f"{criterion_id}:{label}:{tool}: executed {count} times; latest={latest.get((criterion_id, label, tool), '')}"
+        for (criterion_id, label, tool), count in counts.items()
+        if count >= 2 and (criterion_id, label, tool) not in satisfied
+    ]
+
+
 def _browser_proof_requires_project_first(
     run: RunRecord,
     state: Any,
     recommendation: AcceptanceEvidenceRecommendation,
 ) -> bool:
-    if recommendation.label != "browser":
+    if recommendation.label not in {"browser", "interaction"}:
         return False
     if recommendation.id.startswith("readiness-source-ref-"):
         return False
@@ -360,7 +435,7 @@ def _has_workspace_project_files(workspace_path: str) -> bool:
     root = Path(workspace_path)
     if not root.exists():
         return False
-    ignored_parts = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
+    ignored_parts = {".agentornith", ".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
     ignored_suffixes = {".db", ".sqlite", ".sqlite3", ".pyc", ".log"}
     for path in root.rglob("*"):
         if not path.is_file():
@@ -415,7 +490,7 @@ def rank_acceptance_recommendations(run: RunRecord) -> list[AcceptanceEvidenceRe
             score -= 100
         if (item.label, item.tool_kind) in satisfied_pairs:
             score -= 20
-        if item.label in {"web", "browser"}:
+        if item.label in {"web", "browser", "interaction"}:
             score -= 5
         if not item.available or item.tool_kind == "ask_user":
             score += 40
@@ -525,6 +600,18 @@ def _recommendation_for_label(
                 tool_kind="desktop_screenshot",
                 action="Capture a supervised desktop screenshot of the relevant UI.",
                 reason="Browser tools are disabled, but desktop inspection is available.",
+            )
+    if label == "interaction":
+        if state.browser_enabled:
+            return AcceptanceEvidenceRecommendation(
+                id=f"{criterion_id}-interaction",
+                criterion_id=criterion_id,
+                criterion=criterion,
+                label=label,
+                tool_kind="browser_interaction_test",
+                action="Run a browser interaction proof against the local app page.",
+                command_hint=_local_index_url(run.workspace_path),
+                reason="Criterion needs functional browser interaction proof.",
             )
     if label == "checkpoint":
         return AcceptanceEvidenceRecommendation(

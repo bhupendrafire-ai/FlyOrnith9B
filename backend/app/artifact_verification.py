@@ -8,11 +8,31 @@ from .schemas import RunRecord, RunState
 
 PPTX_STRONG_WORDS = {"ppt", "pptx", "powerpoint", "deck", "presentation"}
 HTML_WORDS = {"html", "webpage", "website", "landing page", "single page", "web app", "browser app"}
+ARTIFACT_PROOF_WORDS = {
+    "artifact",
+    "artifacts",
+    "check",
+    "checks",
+    "document",
+    "exist",
+    "exists",
+    "file",
+    "files",
+    "html",
+    "index",
+    "load",
+    "loads",
+    "page",
+    "source",
+    "sources",
+    "verification",
+    "verify",
+}
 
 
 def artifact_verification_command(run: RunRecord, state: RunState, criterion: str = "") -> str:
     """Return a narrow artifact existence check when acceptance is about a deliverable file."""
-    suffix = expected_artifact_suffix(run, state, criterion)
+    suffix = _artifact_verification_suffix(run, state, criterion)
     if suffix == ".pptx":
         return _pptx_command(criterion)
     if suffix == ".html":
@@ -22,11 +42,31 @@ def artifact_verification_command(run: RunRecord, state: RunState, criterion: st
 
 def expected_artifact_suffix(run: RunRecord, state: RunState, criterion: str = "") -> str:
     text = " ".join([run.goal, state.goal, criterion, " ".join(state.acceptance_criteria)]).lower()
+    return _suffix_from_text(text)
+
+
+def _artifact_verification_suffix(run: RunRecord, state: RunState, criterion: str = "") -> str:
+    suffix = expected_artifact_suffix(run, state, criterion)
+    if criterion.strip() and not _criterion_needs_artifact_proof(criterion.lower(), suffix):
+        return ""
+    return suffix
+
+
+def _suffix_from_text(text: str) -> str:
     if _has_pptx_intent(text):
         return ".pptx"
     if any(word in text for word in HTML_WORDS):
         return ".html"
     return ""
+
+
+def _criterion_needs_artifact_proof(text: str, suffix: str = "") -> bool:
+    words = set(re.findall(r"[a-z0-9_-]{3,}", text))
+    if words.intersection(ARTIFACT_PROOF_WORDS):
+        return True
+    if suffix == ".pptx":
+        return bool(words.intersection({"compare", "compares", "slide", "slides", "tradeoff", "tradeoffs", "use-case"}))
+    return False
 
 
 def _has_pptx_intent(text: str) -> bool:
@@ -42,7 +82,7 @@ def expected_artifact_exists(run: RunRecord, state: RunState, criterion: str = "
     if not workspace.exists():
         return False
     return any(
-        "node_modules" not in path.parts and path.is_file() and path.stat().st_size > 0
+        not {".agentornith", "node_modules"}.intersection(path.parts) and path.is_file() and path.stat().st_size > 0
         for path in workspace.rglob(f"*{suffix}")
     )
 
@@ -72,7 +112,7 @@ def _pptx_command(criterion: str = "") -> str:
         text_checks += "assert 'tradeoff' in text or 'limitation' in text, 'missing tradeoff or limitation text'; "
     return (
         "python -c \"from pathlib import Path; import zipfile; "
-        "files=sorted(p for p in Path('.').rglob('*.pptx') if 'node_modules' not in p.parts); "
+        "files=sorted(p for p in Path('.').rglob('*.pptx') if '.agentornith' not in p.parts and 'node_modules' not in p.parts); "
         "assert files, 'no pptx files found'; "
         "p=files[0]; assert p.stat().st_size > 1000, 'pptx file is too small'; "
         "z=zipfile.ZipFile(p); "
@@ -87,7 +127,7 @@ def _pptx_command(criterion: str = "") -> str:
 def _html_command() -> str:
     return (
         "python -c \"from pathlib import Path; "
-        "files=sorted(p for p in Path('.').rglob('*.html') if 'node_modules' not in p.parts); "
+        "files=sorted(p for p in Path('.').rglob('*.html') if '.agentornith' not in p.parts and 'node_modules' not in p.parts); "
         "assert files, 'no html files found'; "
         "p=files[0]; text=p.read_text(encoding='utf-8', errors='replace').lower(); "
         "assert '<html' in text and '</html>' in text, 'html document is incomplete'; "

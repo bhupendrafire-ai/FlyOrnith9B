@@ -46,11 +46,44 @@ EVIDENCE_LABEL_WORDS: dict[str, set[str]] = {
         "visible",
         "visibly",
     },
+    "interaction": {
+        "active",
+        "attack",
+        "audio",
+        "click",
+        "clicks",
+        "control",
+        "controls",
+        "feedback",
+        "filter",
+        "highlight",
+        "highlighted",
+        "input",
+        "interactive",
+        "keyboard",
+        "keyboards",
+        "keydown",
+        "keyup",
+        "latency",
+        "note",
+        "notes",
+        "octave",
+        "play",
+        "played",
+        "plays",
+        "press",
+        "pressed",
+        "release",
+        "sustain",
+        "synth",
+        "volume",
+        "waveform",
+    },
     "edit": {"edit", "code", "write", "implement", "implemented", "patch", "change"},
     "web": {"web", "internet", "source", "sources", "search", "citation", "citations", "latest"},
 }
 
-EVIDENCE_LABEL_ORDER = ("verification", "checkpoint", "browser", "edit", "web")
+EVIDENCE_LABEL_ORDER = ("verification", "checkpoint", "browser", "interaction", "edit", "web")
 LOCAL_WEB_APP_WORDS = {
     "app",
     "browser",
@@ -81,7 +114,37 @@ SOURCE_FILE_CONTEXT_WORDS = {
     "workspace",
 }
 WEB_CITATION_WORDS = {"internet", "latest", "search", "citation", "citations", "web"}
+INTERACTION_ACTION_WORDS = {
+    "active",
+    "attack",
+    "audio",
+    "click",
+    "clicks",
+    "control",
+    "controls",
+    "feedback",
+    "filter",
+    "highlight",
+    "highlighted",
+    "input",
+    "interactive",
+    "keydown",
+    "keyup",
+    "latency",
+    "octave",
+    "play",
+    "played",
+    "plays",
+    "press",
+    "pressed",
+    "release",
+    "sustain",
+    "volume",
+    "waveform",
+}
 MUSIC_NOTE_CONTEXT_WORDS = {
+    "note",
+    "notes",
     "audio",
     "chord",
     "chords",
@@ -118,12 +181,18 @@ def infer_required_labels(criterion: str) -> list[str]:
 
 def _label_is_false_positive(label: str, words: set[str]) -> bool:
     if label == "checkpoint":
+        if words.intersection({"checkpoint", "handoff", "memory", "obsidian"}):
+            return False
         return bool(words.intersection({"note", "notes"}) and words.intersection(MUSIC_NOTE_CONTEXT_WORDS))
     if label == "web":
         if "web" in words and not words.intersection(WEB_SOURCE_WORDS) and words.intersection(LOCAL_WEB_APP_WORDS):
             return True
         if words.intersection({"source", "sources"}) and not words.intersection(WEB_CITATION_WORDS):
             return bool(words.intersection(SOURCE_FILE_CONTEXT_WORDS))
+    if label == "interaction":
+        if not words.intersection(INTERACTION_ACTION_WORDS):
+            return True
+        return False
     return False
 
 

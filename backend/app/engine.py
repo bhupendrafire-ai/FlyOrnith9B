@@ -450,6 +450,16 @@ class AgentLoopEngine:
         state.handoff_summary = self._make_handoff(run, state)
         run = self.store.update_run(run_id, state=state)
         await self._event(run_id, "user_steer", message)
+        await self._workstream(
+            run_id,
+            phase="steer",
+            role="user",
+            title="User Steering",
+            summary=message,
+            next_action=state.next_step,
+            severity="normal",
+            refs={"source": "dashboard_steer"},
+        )
         if run.status in {"paused", "blocked", "waiting_approval", "waiting_goal_confirmation"}:
             await self._resume_run_with_preflight(run_id, source="steer", allow_user_attention=True)
         return self.store.get_run(run_id)
@@ -558,7 +568,7 @@ class AgentLoopEngine:
     async def refresh_workspace_diff(self, run_id: str) -> RunRecord:
         run = self.store.get_run(run_id)
         source_path = run.state.workspace_isolation.source_path or run.workspace_path
-        runner = ToolRunner(Path(run.workspace_path), self.config)
+        runner = self._tool_runner(run, run.state)
         result = await runner.execute("workspace_diff", {"source_path": source_path}, approved=True)
         await self._record_tool_result(run_id, result)
         return self.store.get_run(run_id)
@@ -1511,7 +1521,8 @@ class AgentLoopEngine:
         payload = approval["payload"]
         tool_name = str(payload.get("tool_name") or approval["action_kind"])
         args = payload.get("args") if isinstance(payload.get("args"), dict) else payload
-        runner = ToolRunner(Path(self.store.get_run(run_id).workspace_path), self.config)
+        run_for_tool = self.store.get_run(run_id)
+        runner = self._tool_runner(run_for_tool, run_for_tool.state)
         result = await runner.execute(tool_name, args, approved=True)
         await self._record_tool_result(run_id, result)
         run = self.store.get_run(run_id)
@@ -3130,6 +3141,11 @@ class AgentLoopEngine:
                 "args": {"command": state.repo_map.test_commands[0] if state.repo_map.test_commands else "python -m pytest"},
                 "thought_summary": thought,
             }
+        elif tool == "browser_interaction_test":
+            url = self._url_from_hint(self._local_index_url(state))
+            if not url:
+                return None
+            action = {"tool": "browser_interaction_test", "args": {"url": url, "criterion": readiness.recommended_action}, "thought_summary": thought}
         elif tool == "browser_screenshot":
             return None
         elif tool == "desktop_screenshot":
@@ -3444,7 +3460,8 @@ class AgentLoopEngine:
             "Return exactly one JSON object for a file_write tool call. "
             "Put the complete self-contained HTML document in args.content as a valid JSON string. "
             "Include compact inline CSS and JavaScript when the goal needs an interactive app. "
-            "Keep it complete but small enough for one local-model response.\n\n"
+            "Keep it complete but small enough for one local-model response. "
+            "Use args.path=\"index.html\" relative to the active run workspace; do not write to the source workspace or artifact directories.\n\n"
             f"Goal: {state.goal}\n"
             f"Current task: {current_task_text}\n"
             f"Acceptance criteria:\n{criteria_text}\n\n"
@@ -3679,7 +3696,9 @@ class AgentLoopEngine:
             f"Allowed tools: {', '.join(TOOL_NAMES)}. "
             "Do not request raw logs. Prefer compact, verifiable actions. "
             "If acceptance proof recommendations are available, choose the smallest recommended proof action before broad implementation work. "
-            "Use file_read for orientation, patch_propose before patch_apply, and run_tests/git_diff for verification.\n\n"
+            "Use file_read for orientation, patch_propose before patch_apply, and run_tests/git_diff for verification. "
+            "For file_read, file_write, and patch_apply, use paths relative to the active workspace shown in the action context; "
+            "do not target global artifact directories or assume the source workspace is the write location.\n\n"
             f"Original goal: {run.goal}\nActive goal: {state.goal}\n"
             f"Ornith action context:\n{action_context_text}\n\n"
             f"{artifact_instruction}"
@@ -3876,6 +3895,15 @@ class AgentLoopEngine:
                 "args": {"url": url},
                 "thought_summary": thought,
             }
+        if item.tool_kind == "browser_interaction_test":
+            url = self._url_from_hint(item.command_hint)
+            if not url:
+                return None
+            return {
+                "tool": "browser_interaction_test",
+                "args": {"url": url, "criterion": item.criterion},
+                "thought_summary": thought,
+            }
         if item.tool_kind == "desktop_screenshot":
             return {"tool": "desktop_screenshot", "args": {}, "thought_summary": thought}
         if item.tool_kind == "obsidian_checkpoint":
@@ -3905,6 +3933,16 @@ class AgentLoopEngine:
         value = hint.split(marker, 1)[1].strip()
         return value.split()[0].strip(",;")
 
+    def _tool_runner(self, run: RunRecord, state: RunState) -> ToolRunner:
+        source_path = str(state.workspace_isolation.source_path or "").strip()
+        source_workspace = Path(source_path) if source_path else None
+        return ToolRunner(
+            Path(run.workspace_path),
+            self.config,
+            approval_mode=state.approval_mode,
+            source_workspace=source_workspace,
+        )
+
     async def _execute_action(self, run: RunRecord, action: dict[str, Any]) -> ToolResult:
         tool_name = str(action.get("tool") or action.get("action") or "file_read")
         if tool_name == "inspect_workspace":
@@ -3918,11 +3956,11 @@ class AgentLoopEngine:
             return ToolResult(False, tool_name, "Browser tools are disabled for this run.", args)
         if tool_name.startswith("desktop_") and not state.desktop_enabled:
             return ToolResult(False, tool_name, "Desktop tools are disabled for this run.", args)
-        runner = ToolRunner(Path(run.workspace_path), self.config, approval_mode=state.approval_mode)
+        runner = self._tool_runner(run, state)
         return await runner.execute(tool_name, args)
 
     async def _verify(self, run: RunRecord, state: RunState) -> ToolResult:
-        runner = ToolRunner(Path(run.workspace_path), self.config, approval_mode=state.approval_mode)
+        runner = self._tool_runner(run, state)
         if state.files_touched:
             return await runner.execute("git_diff", {})
         if state.commands_run:
@@ -3942,6 +3980,7 @@ class AgentLoopEngine:
         tool = str(action.get("tool") or action.get("action") or "")
         return tool in {
             "browser_open",
+            "browser_interaction_test",
             "browser_screenshot",
             "desktop_screenshot",
             "file_read",
@@ -4565,7 +4604,7 @@ class AgentLoopEngine:
         workspace = Path(state.workspace_isolation.workspace_path or "")
         if not workspace.exists():
             return False
-        ignored_parts = {".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
+        ignored_parts = {".agentornith", ".git", ".venv", "__pycache__", "node_modules", "dist", "build"}
         ignored_suffixes = {".db", ".sqlite", ".sqlite3", ".pyc", ".log"}
         for path in workspace.rglob("*"):
             if not path.is_file():
@@ -4621,6 +4660,8 @@ class AgentLoopEngine:
             labels.add("checkpoint")
         if tool_kind in set(self.config.completion_browser_tools):
             labels.add("browser")
+        if tool_kind == "browser_interaction_test":
+            labels.update({"browser", "interaction"})
         if tool_kind in set(self.config.completion_edit_tools):
             labels.add("edit")
         if tool_kind in set(self.config.completion_web_tools):
@@ -4796,6 +4837,28 @@ class AgentLoopEngine:
                 tool_kind="ask_user",
                 action="Ask to enable browser or desktop tools, or revise the browser-facing criterion.",
                 reason="No browser or desktop inspection tool is enabled for this run.",
+                available=False,
+            )
+        if label == "interaction":
+            if state.browser_enabled:
+                return AcceptanceEvidenceRecommendation(
+                    id=f"{item.id}-interaction",
+                    criterion_id=item.id,
+                    criterion=item.criterion,
+                    label=label,
+                    tool_kind="browser_interaction_test",
+                    action="Run a browser interaction proof against the local app page.",
+                    command_hint=self._local_index_url(state),
+                    reason="Criterion needs functional browser interaction proof.",
+                )
+            return AcceptanceEvidenceRecommendation(
+                id=f"{item.id}-interaction",
+                criterion_id=item.id,
+                criterion=item.criterion,
+                label=label,
+                tool_kind="ask_user",
+                action="Ask to enable browser tools or provide another functional interaction proof.",
+                reason="Browser interaction proof requires browser tools.",
                 available=False,
             )
         if label == "web":
@@ -7053,7 +7116,7 @@ class AgentLoopEngine:
         return public
 
     def _public_role(self, role: str) -> str:
-        return role if role in {"ornith", "harness", "tool", "operator", "system"} else "system"
+        return role if role in {"user", "ornith", "harness", "tool", "operator", "system"} else "system"
 
     def _public_severity(self, severity: str) -> str:
         return severity if severity in {"normal", "watch", "blocked"} else "normal"

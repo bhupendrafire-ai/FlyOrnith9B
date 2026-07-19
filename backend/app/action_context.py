@@ -39,6 +39,10 @@ def build_action_context_pack(run: RunRecord, *, selected_action: dict[str, Any]
         run_id=run.id,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         milestone=state.milestone,
+        workspace_summary=_single_line(state.workspace_isolation.summary, 260),
+        active_workspace_path=str(run.workspace_path or state.workspace_isolation.workspace_path or ""),
+        source_workspace_path=str(state.workspace_isolation.source_path or ""),
+        path_guidance=_workspace_path_guidance(run),
         current_task_id=state.current_task_id,
         current_task_title=current_task.title if current_task else "",
         task_transition_ledger=_task_transition_ledger(run),
@@ -80,6 +84,7 @@ def render_action_context_pack(pack: ActionContextPack) -> str:
     lines = [
         "Action context pack:",
         f"- milestone={pack.milestone}; task={pack.current_task_id or 'none'}:{pack.current_task_title or 'untitled'}; readiness={pack.action_readiness_status or 'unknown'}",
+        f"- workspace=active:{pack.active_workspace_path or 'unknown'}; source:{pack.source_workspace_path or 'unknown'}; {pack.workspace_summary or 'no workspace summary'}; path_rule={pack.path_guidance or 'use relative paths under active workspace'}",
         f"- task_transitions={_join(pack.task_transition_ledger)}",
         f"- model_guards={_join(pack.model_guard_ledger)}",
         f"- edit_evidence={_join(pack.edit_evidence_ledger)}",
@@ -97,6 +102,15 @@ def render_action_context_pack(pack: ActionContextPack) -> str:
         f"- recovery_hint={pack.recovery_hint or 'none'}; context={pack.context_budget or 'unknown'}",
     ]
     return "\n".join(lines)
+
+
+def _workspace_path_guidance(run: RunRecord) -> str:
+    isolation = run.state.workspace_isolation
+    source = str(isolation.source_path or "").strip()
+    active = str(run.workspace_path or isolation.workspace_path or "").strip()
+    if source and active and source != active:
+        return "file paths are relative to active workspace; source absolute paths map to the same relative path in active workspace; promote when ready"
+    return "file paths are relative to the active workspace"
 
 
 

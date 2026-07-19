@@ -11,6 +11,7 @@ from .schemas import WorkspaceDiffFile, WorkspaceDiffSummary, WorkspaceIsolation
 
 
 SKIP_DIRS = {
+    ".agentornith",
     ".git",
     ".mypy_cache",
     ".pytest_cache",
@@ -48,6 +49,16 @@ class WorkspaceManager:
                 workspace_path=str(source),
                 created_at=utc_now(),
                 summary="Workspace isolation disabled; using the configured source workspace directly.",
+            )
+
+        if self.mode == "source":
+            return WorkspaceIsolation(
+                enabled=False,
+                mode="source",
+                source_path=str(source),
+                workspace_path=str(source),
+                created_at=utc_now(),
+                summary="Workspace isolation source mode; using the configured source workspace directly.",
             )
 
         if self.mode not in {"copy", "git_worktree"}:

@@ -52,6 +52,7 @@ from app.schemas import (
     WorkspaceIsolation,
 )
 from app.tools import ToolResult, ToolRunner
+from app.workspace import WorkspaceManager, build_workspace_diff
 
 from conftest import make_config
 
@@ -156,6 +157,21 @@ def test_tool_result_emits_public_workstream_result(tmp_path: Path):
     assert events[-1]["data"]["tool"] == "file_read"
     assert events[-1]["data"]["rationale"] == "Inspect workspace first."
     assert events[-1]["data"]["refs"]["arg_keys"] == "path"
+
+
+def test_steering_emits_visible_user_workstream(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run("Build the thing", "Steer", str(tmp_path), [])
+
+    asyncio.run(engine.steer_run(run.id, "Look for the HTML in the active workspace."))
+
+    events = engine.store.list_events(run.id)
+    assert any(event["kind"] == "user_steer" for event in events)
+    workstreams = [event for event in events if event["kind"] == "workstream"]
+    assert workstreams[-1]["data"]["title"] == "User Steering"
+    assert workstreams[-1]["data"]["role"] == "user"
+    assert workstreams[-1]["data"]["summary"] == "Look for the HTML in the active workspace."
+    assert workstreams[-1]["data"]["next_action"] == "Apply latest user steering at the next loop step."
 
 
 OBJECTIVE_READINESS_ITEM_IDS = [
@@ -3439,6 +3455,183 @@ def test_dashboard_screenshot_does_not_verify_non_dashboard_app(tmp_path: Path) 
 
     assert run.state.acceptance_evidence[0].status == "open"
     assert run.state.acceptance_evidence[0].matched_labels == []
+
+
+def test_keyboard_audio_criterion_uses_browser_interaction_proof(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    (tmp_path / "index.html").write_text("<html><body><button>A</button></body></html>", encoding="utf-8")
+    run = engine.store.create_run(
+        "Build an original browser-based synth web app called KeySynth Studio.",
+        "Interaction proof",
+        str(tmp_path),
+        ["The user can play notes from the computer keyboard with low-latency audio feedback."],
+    )
+
+    engine._ensure_acceptance_evidence(run.state)
+
+    assert run.state.acceptance_evidence[0].required_labels == ["interaction"]
+    assert run.state.acceptance_recommendations[0].label == "interaction"
+    assert run.state.acceptance_recommendations[0].tool_kind == "browser_interaction_test"
+    assert run.state.acceptance_recommendations[0].command_hint.startswith("url=file:")
+
+
+def test_browser_interaction_result_satisfies_browser_and_interaction_labels(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    run = engine.store.create_run(
+        "Build a browser synth app",
+        "Interaction evidence",
+        str(tmp_path),
+        ["The on-screen synth keyboard visibly highlights pressed keys."],
+    )
+    engine._ensure_acceptance_evidence(run.state)
+    result = ToolResult(
+        True,
+        "browser_interaction_test",
+        "Browser interaction proof passed.",
+        {"url": "file:///tmp/index.html", "path": "browser-interaction.png"},
+    )
+
+    engine._update_acceptance_evidence(run.state, result)
+
+    assert run.state.acceptance_evidence[0].required_labels == ["browser", "interaction"]
+    assert run.state.acceptance_evidence[0].matched_labels == ["browser", "interaction"]
+    assert run.state.acceptance_evidence[0].status == "verified"
+
+
+def test_tool_runner_artifacts_live_under_workspace_metadata_and_are_diff_ignored(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    runner = ToolRunner(tmp_path, config)
+    artifact = runner.artifact_dir / "browser-test.png"
+    artifact.write_text("png", encoding="utf-8")
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    source.mkdir()
+    workspace.mkdir()
+    metadata_artifact = workspace / ".agentornith" / "artifacts" / "browser-test.png"
+    metadata_artifact.parent.mkdir(parents=True)
+    metadata_artifact.write_text("png", encoding="utf-8")
+
+    diff = build_workspace_diff(source, workspace)
+
+    assert runner.artifact_dir == tmp_path.resolve() / ".agentornith" / "artifacts"
+    assert diff.total_files == 0
+
+
+def test_tool_runner_remaps_source_absolute_file_write_to_active_workspace(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    source = tmp_path / "source"
+    workspace = tmp_path / "active"
+    source.mkdir()
+    workspace.mkdir()
+    runner = ToolRunner(workspace, config, source_workspace=source)
+    source_target = source / "nested" / "index.html"
+
+    result = asyncio.run(runner.execute("file_write", {"path": str(source_target), "content": "<html>ok</html>"}))
+
+    assert result.ok
+    assert (workspace / "nested" / "index.html").read_text(encoding="utf-8") == "<html>ok</html>"
+    assert not source_target.exists()
+    assert result.data["path"] == str(Path("nested") / "index.html")
+    assert result.data["remapped_from_source"] is True
+    assert "active workspace" in result.data["path_guidance"]
+
+
+def test_tool_runner_missing_file_read_returns_nearby_workspace_hints(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    (tmp_path / "index.html").write_text("<html>ready</html>", encoding="utf-8")
+    runner = ToolRunner(tmp_path, config)
+
+    result = asyncio.run(runner.execute("file_read", {"path": "missing.html"}))
+
+    assert not result.ok
+    assert "File not found or unreadable" in result.summary
+    assert "relative to the active workspace" in result.summary
+    assert "index.html" in result.data["nearby_files"]
+
+
+def test_patch_apply_remaps_source_absolute_paths_to_active_workspace(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    source = tmp_path / "source"
+    workspace = tmp_path / "active"
+    source.mkdir()
+    workspace.mkdir()
+    runner = ToolRunner(workspace, config, source_workspace=source)
+    source_target = source / "app.py"
+
+    result = asyncio.run(
+        runner.execute(
+            "patch_apply",
+            {"patch_id": "patch-source-path", "files": [{"path": str(source_target), "content": "print('ok')\n"}]},
+            approved=True,
+        )
+    )
+
+    assert result.ok
+    assert (workspace / "app.py").read_text(encoding="utf-8") == "print('ok')\n"
+    assert not source_target.exists()
+    assert result.data["files"] == ["app.py"]
+
+
+def test_workspace_manager_source_mode_uses_requested_workspace_directly(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    manager = WorkspaceManager(enabled=True, mode="source", root=tmp_path / "runs", copy_limit_files=10)
+
+    isolation = manager.prepare_run_workspace("run-test", source)
+
+    assert isolation.enabled is False
+    assert isolation.mode == "source"
+    assert isolation.source_path == str(source.resolve())
+    assert isolation.workspace_path == str(source.resolve())
+
+
+def test_action_readiness_replans_repeated_unsatisfied_recommendation(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    (tmp_path / "index.html").write_text("<html><body>ready</body></html>", encoding="utf-8")
+    run = engine.store.create_run(
+        "Build an original browser-based synth web app called KeySynth Studio.",
+        "Loop breaker",
+        str(tmp_path),
+        ["The user can play notes from the computer keyboard with low-latency audio feedback."],
+    )
+    run.state.milestone = "act"
+    run.state.task_graph = [TaskNode(id="task-verify", title="Verify interaction", status="in_progress", kind="verify")]
+    run.state.current_task_id = "task-verify"
+    run.state.acceptance_recommendation_traces = [
+        AcceptanceRecommendationTrace(
+            id="rec-trace-1",
+            recommendation_id="criterion-1-interaction",
+            criterion_id="criterion-1",
+            criterion=run.state.acceptance_criteria[0],
+            label="interaction",
+            recommended_tool="browser_interaction_test",
+            selected_tool="browser_interaction_test",
+            source="harness",
+            status="executed",
+            result_ok=True,
+            result_summary="Interaction proof ran but stayed open.",
+            evidence_status="open",
+        ),
+        AcceptanceRecommendationTrace(
+            id="rec-trace-2",
+            recommendation_id="criterion-1-interaction",
+            criterion_id="criterion-1",
+            criterion=run.state.acceptance_criteria[0],
+            label="interaction",
+            recommended_tool="browser_interaction_test",
+            selected_tool="browser_interaction_test",
+            source="harness",
+            status="executed",
+            result_ok=True,
+            result_summary="Interaction proof ran again but stayed open.",
+            evidence_status="open",
+        ),
+    ]
+
+    report = engine._build_action_readiness(run, run.state)
+
+    assert report.status == "needs_replan"
+    assert report.issues[0].id == "repeated_unsatisfied_proof"
 
 
 def test_recommended_tool_waits_for_edit_evidence_before_verification(tmp_path: Path) -> None:

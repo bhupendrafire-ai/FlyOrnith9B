@@ -906,13 +906,29 @@ export function App() {
 
   async function sendSteering(event: FormEvent) {
     event.preventDefault();
-    if (!selectedId || !steer.trim()) return;
-    await api<RunRecord>(`/api/runs/${selectedId}/steer`, {
-      method: "POST",
-      body: JSON.stringify({ message: steer.trim() }),
-    });
-    setSteer("");
-    await refreshSelected();
+    const runId = selectedId;
+    const message = steer.trim();
+    if (!runId || !message) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updatedRun = await api<RunRecord>(`/api/runs/${runId}/steer`, {
+        method: "POST",
+        body: JSON.stringify({ message }),
+      });
+      setSteer("");
+      setSelectedId(runId);
+      setSelected(updatedRun);
+      setOperatorDispatchMessage(`Steering sent for ${runId}.`);
+      await refreshSelected(runId);
+      await refreshRuns(runId);
+      await refreshSupervisor();
+      await refreshOperatorActions(queueFilter);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function proposeGoal(event: FormEvent) {
@@ -1624,8 +1640,9 @@ export function App() {
                   value={steer}
                   onChange={(event) => setSteer(event.target.value)}
                   placeholder="Steer Ornith, answer a prompt, or add constraints for this run..."
+                  disabled={busy}
                 />
-                <button className="primary" type="submit" disabled={!selectedId}>
+                <button className="primary" type="submit" disabled={!selectedId || !steer.trim() || busy}>
                   <Send size={16} />
                   Send
                 </button>
@@ -3936,8 +3953,9 @@ export function App() {
               value={steer}
               onChange={(event) => setSteer(event.target.value)}
               placeholder="Send a follow-up to this persistent Ornith chat..."
+              disabled={busy}
             />
-            <button type="submit" disabled={!selectedId}>
+            <button type="submit" disabled={!selectedId || !steer.trim() || busy}>
               <Send size={16} />
               Send
             </button>

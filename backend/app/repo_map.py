@@ -8,7 +8,7 @@ from pathlib import Path
 from .schemas import RepoMap
 
 
-IGNORE_PARTS = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "data"}
+IGNORE_PARTS = {".agentornith", ".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "dist", "data"}
 MANIFEST_NAMES = {
     "README.md",
     "package.json",
